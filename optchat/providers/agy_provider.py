@@ -88,7 +88,7 @@ class AgyProvider(BaseLLMProvider):
             "--model",
             self.model,
             "--output-format",
-            "json",
+            "stream-json",
             "--print",
             full_prompt,
         ]
@@ -102,23 +102,60 @@ class AgyProvider(BaseLLMProvider):
             stderr=asyncio.subprocess.PIPE,
         )
 
+        full_text_chunks: List[str] = []
+        final_result_data: Dict[str, Any] = {}
+        stderr_chunks: List[str] = []
+
+        async def read_stdout():
+            assert proc.stdout is not None
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                raw = line.decode("utf-8", errors="replace").strip()
+                if not raw:
+                    continue
+                try:
+                    event_data = json.loads(raw)
+                    event_type = event_data.get("event")
+                    if event_type == "step_update":
+                        su = event_data.get("step_update", {})
+                        delta = su.get("text_delta")
+                        if delta:
+                            full_text_chunks.append(delta)
+                            if stream_callback:
+                                stream_callback("text", delta)
+                    elif event_type == "result":
+                        final_result_data.update(event_data.get("result", {}))
+                except Exception:
+                    pass
+
+        async def read_stderr():
+            assert proc.stderr is not None
+            while True:
+                err_line = await proc.stderr.readline()
+                if not err_line:
+                    break
+                stderr_chunks.append(err_line.decode("utf-8", errors="replace"))
+
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
+            await asyncio.wait_for(
+                asyncio.gather(read_stdout(), read_stderr()),
+                timeout=self.timeout,
+            )
+            await proc.wait()
         except asyncio.TimeoutError:
             proc.kill()
             raise TimeoutError(f"agy turn timed out after {self.timeout}s")
 
-        out_text = stdout.decode("utf-8", errors="replace").strip()
         if proc.returncode != 0:
-            err_text = stderr.decode("utf-8", errors="replace").strip()
+            err_text = "".join(stderr_chunks).strip()
             raise RuntimeError(f"agy process failed (code {proc.returncode}): {err_text}")
 
-        # Parse JSON output from agy
-        data = json.loads(out_text)
-        response_text = data.get("response", "").strip()
-        usage = data.get("usage", {})
+        response_text = final_result_data.get("response", "").strip() or "".join(full_text_chunks).strip()
+        usage = final_result_data.get("usage", {})
 
-        if stream_callback and response_text:
+        if stream_callback and not full_text_chunks and response_text:
             stream_callback("text", response_text)
 
         # Inspect if agy output requested a tool call (spawn, zoom, date, bash, etc.)
