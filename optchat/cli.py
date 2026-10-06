@@ -87,6 +87,8 @@ async def run_chat_session(
         elif event_type == "log_echo":
             preview = content[:200] + ("..." if len(content) > 200 else "")
             console.print(f"[yellow bold]➜ Result:[/yellow bold] [yellow]{preview}[/yellow]\n")
+        elif event_type == "settling":
+            console.print(f"[dim italic]{content}[/dim italic]")
         elif event_type == "log_talk":
             console.print()
 

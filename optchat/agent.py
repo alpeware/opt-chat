@@ -102,6 +102,8 @@ class TurnAgent:
                 # 1. Wait until every line of view is a summary (§6)
                 self._abort_settle.clear()
                 self.compactor.pump()
+                if not self.view.is_settled():
+                    self.emit_ui("settling", "Compacting memory summaries before starting turn...")
                 settled = await self.view.settle(abort_event=self._abort_settle)
                 if not settled:
                     logger.info("Settle wait aborted or timed out. Turn skipped.")
