@@ -165,8 +165,8 @@ class ProcessLock:
 class Storage:
     """Durable append-only storage for the log and tree (§2)."""
 
-    def __init__(self, chat_dir: Path):
-        self.chat_dir = Path(chat_dir).resolve()
+    def __init__(self, chat_dir: Union[str, Path]):
+        self.chat_dir = Path(os.path.expanduser(str(chat_dir))).resolve()
         self.main_dir = self.chat_dir / "main"
         self.tree_dir = self.chat_dir / "tree"
         self.lock = ProcessLock(self.chat_dir / "lock")
@@ -174,11 +174,16 @@ class Storage:
         self.messages: List[Message] = []
         self.tree: Dict[Tuple[int, int], TreeNode] = {}
 
-    def open(self) -> None:
-        """Acquire lock, create dirs, and load all messages and tree nodes."""
-        self.lock.acquire()
+    def open(self, acquire_lock: bool = True) -> None:
+        """Open storage, optionally acquiring exclusive writer lock."""
+        if acquire_lock:
+            self.lock.acquire()
         self.main_dir.mkdir(parents=True, exist_ok=True)
         self.tree_dir.mkdir(parents=True, exist_ok=True)
+        self._load_all()
+
+    def reload(self) -> None:
+        """Reload all messages and tree nodes from disk."""
         self._load_all()
 
     def close(self) -> None:

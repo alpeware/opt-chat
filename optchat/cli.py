@@ -34,10 +34,14 @@ def create_provider(
     provider_name: str,
     model: Optional[str] = None,
     api_key: Optional[str] = None,
+    compact_model: Optional[str] = None,
 ) -> BaseLLMProvider:
     p = provider_name.lower().strip()
     if p == "agy":
-        return AgyProvider(model=model or "gemini-3.8-flash-high")
+        return AgyProvider(
+            model=model or "gemini-3.8-flash-medium",
+            compact_model=compact_model or "gemini-3.8-flash-low",
+        )
     elif p == "anthropic":
         return AnthropicProvider(api_key=api_key, model=model or "claude-3-7-sonnet-latest")
     elif p in ("openai", "openrouter"):

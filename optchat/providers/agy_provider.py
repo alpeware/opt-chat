@@ -21,11 +21,13 @@ logger = logging.getLogger("optchat.providers.agy")
 class AgyProvider(BaseLLMProvider):
     def __init__(
         self,
-        model: str = "gemini-3.8-flash-high",
+        model: str = "gemini-3.8-flash-medium",
+        compact_model: str = "gemini-3.8-flash-low",
         agy_path: Optional[str] = None,
-        timeout: float = 120.0,
+        timeout: float = 60.0,
     ):
         self.model = model
+        self.compact_model = compact_model
         self.agy_path = agy_path or shutil.which("agy") or "/home/simonpure/.local/bin/agy"
         self.timeout = timeout
 
@@ -69,6 +71,7 @@ class AgyProvider(BaseLLMProvider):
         cmd = [
             self.agy_path,
             "--dangerously-skip-permissions",
+            "--disable-slash-commands",
             "--model",
             self.model,
             "--output-format",
@@ -77,8 +80,11 @@ class AgyProvider(BaseLLMProvider):
             full_prompt,
         ]
 
+        env = {**os.environ, "OPTCHAT_DISABLE_MCP": "1"}
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -141,7 +147,13 @@ class AgyProvider(BaseLLMProvider):
         messages: List[Dict[str, Any]],
     ) -> str:
         """Execute compactor step using agy."""
-        parts = [f"System:\n{system}\n"]
+        parts = [
+            "CRITICAL REQUIREMENT: Output ONLY the single summary line directly. "
+            "Do NOT call any tools. Do NOT run commands or scripts. "
+            "Do NOT read or write files. Do NOT write intro or outro. "
+            "Output only plain text.\n",
+            f"System:\n{system}\n",
+        ]
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
@@ -156,16 +168,20 @@ class AgyProvider(BaseLLMProvider):
         cmd = [
             self.agy_path,
             "--dangerously-skip-permissions",
+            "--disable-slash-commands",
             "--model",
-            self.model,
+            self.compact_model,
             "--output-format",
             "json",
             "--print",
             full_prompt,
         ]
 
+        env = {**os.environ, "OPTCHAT_DISABLE_MCP": "1"}
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

@@ -40,12 +40,22 @@ class OptChatMCPServer:
     def initialize_backend(self) -> None:
         if self.storage is None:
             self.storage = Storage(self.chat_dir)
-            self.storage.open()
+            lock_acquired = False
+            try:
+                self.storage.open(acquire_lock=True)
+                lock_acquired = True
+            except RuntimeError:
+                # Storage lock held by another process (e.g. optchat chat CLI).
+                # Fall back to shared access without acquiring the lock.
+                self.storage.open(acquire_lock=False)
+
             self.view = LiveView(self.storage)
             self.view.rebuild()
-            provider = AgyProvider(model="gemini-3.8-flash-high")
-            self.compactor = Compactor(self.storage, self.view, provider)
-            self.compactor.start()
+
+            if lock_acquired:
+                provider = AgyProvider(model="gemini-3.8-flash-medium", compact_model="gemini-3.8-flash-low")
+                self.compactor = Compactor(self.storage, self.view, provider)
+                self.compactor.start()
 
     def get_tools_list(self) -> list[Dict[str, Any]]:
         return [
@@ -122,7 +132,12 @@ class OptChatMCPServer:
 
     async def handle_tool_call(self, name: str, arguments: Dict[str, Any]) -> str:
         self.initialize_backend()
-        assert self.storage is not None and self.view is not None and self.compactor is not None
+        assert self.storage is not None and self.view is not None
+
+        # If writer lock is not held, reload latest messages and tree from disk
+        if self.compactor is None:
+            self.storage.reload()
+            self.view.rebuild()
 
         if name == "optchat_view":
             return self.view.render()
@@ -141,7 +156,8 @@ class OptChatMCPServer:
             text = arguments.get("text", "")
             msg = self.storage.append_message(kind, text)
             self.view.on_new_message(msg.i)
-            self.compactor.pump()
+            if self.compactor:
+                self.compactor.pump()
             return f"Logged message #{msg.i} [{msg.kind}]: {text[:80]}..."
 
         elif name == "optchat_stats":
@@ -250,6 +266,8 @@ class OptChatMCPServer:
 
 
 def main() -> None:
+    if os.environ.get("OPTCHAT_DISABLE_MCP") == "1":
+        sys.exit(0)
     raw_dir = os.environ.get("OPTCHAT_DIR", "~/.optchat")
     chat_dir = Path(os.path.expanduser(raw_dir)).resolve()
     server = OptChatMCPServer(chat_dir)
