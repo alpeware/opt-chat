@@ -35,17 +35,19 @@ def create_provider(
     model: Optional[str] = None,
     api_key: Optional[str] = None,
     compact_model: Optional[str] = None,
+    timeout: float = 300.0,
 ) -> BaseLLMProvider:
     p = provider_name.lower().strip()
     if p == "agy":
         return AgyProvider(
             model=model or "gemini-3.8-flash-medium",
             compact_model=compact_model or "gemini-3.8-flash-low",
+            timeout=timeout,
         )
     elif p == "anthropic":
-        return AnthropicProvider(api_key=api_key, model=model or "claude-3-7-sonnet-latest")
+        return AnthropicProvider(api_key=api_key, model=model or "claude-3-7-sonnet-latest", timeout=timeout)
     elif p in ("openai", "openrouter"):
-        return OpenAIProvider(api_key=api_key, model=model or "gpt-4o")
+        return OpenAIProvider(api_key=api_key, model=model or "gpt-4o", timeout=timeout)
     elif p == "mock":
         return MockLLMProvider()
     else:
@@ -59,6 +61,7 @@ async def run_chat_session(
     compactor_provider_name: Optional[str] = None,
     compactor_model: Optional[str] = None,
     api_key: Optional[str] = None,
+    timeout: float = 300.0,
 ) -> None:
     storage = Storage(chat_dir)
     storage.open()
@@ -66,7 +69,7 @@ async def run_chat_session(
     view = LiveView(storage)
     view.rebuild()
 
-    main_provider = create_provider(provider_name, model, api_key)
+    main_provider = create_provider(provider_name, model, api_key, timeout=timeout)
     compactor_pname = compactor_provider_name or provider_name
     comp_provider = (
         main_provider
@@ -174,6 +177,9 @@ async def run_chat_session(
             except (KeyboardInterrupt, asyncio.CancelledError):
                 console.print("\n[red]Turn interrupted by user.[/red]")
                 agent.cancel_turn()
+            except Exception as e:
+                console.print(f"\n[bold red]Turn error:[/bold red] [red]{e}[/red]\n")
+                agent.cancel_turn()
 
     finally:
         compactor.stop()
@@ -193,6 +199,7 @@ def main() -> None:
     chat_parser.add_argument("--model", default=None, help="Model name (e.g. gemini-3.8-flash-high, claude-sonnet-5-5-medium)")
     chat_parser.add_argument("--compactor-provider", default=None, help="Compactor LLM Provider (default: same as provider)")
     chat_parser.add_argument("--compactor-model", default=None, help="Compactor model name (e.g. gemini-3.8-flash-high)")
+    chat_parser.add_argument("--timeout", type=float, default=300.0, help="Per-turn timeout in seconds (default: 300.0)")
 
     # mcp command
     mcp_parser = subparsers.add_parser("mcp", help="Run OptChat Model Context Protocol (MCP) stdio server for agy")
@@ -284,6 +291,7 @@ def main() -> None:
                 model=getattr(args, "model", None),
                 compactor_provider_name=getattr(args, "compactor_provider", None),
                 compactor_model=getattr(args, "compactor_model", None),
+                timeout=getattr(args, "timeout", 300.0),
             )
         )
 

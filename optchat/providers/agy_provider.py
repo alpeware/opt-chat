@@ -24,7 +24,7 @@ class AgyProvider(BaseLLMProvider):
         model: str = "gemini-3.8-flash-medium",
         compact_model: str = "gemini-3.8-flash-low",
         agy_path: Optional[str] = None,
-        timeout: float = 60.0,
+        timeout: float = 300.0,
     ):
         self.model = model
         self.compact_model = compact_model

@@ -192,12 +192,20 @@ class TurnAgent:
 
         max_steps = 30
         for _ in range(max_steps):
-            response: LLMResponse = await self.provider.chat(
-                system=system_prompt,
-                messages=call_messages,
-                tools=self.tool_registry.definitions,
-                stream_callback=stream_listener,
-            )
+            try:
+                response: LLMResponse = await self.provider.chat(
+                    system=system_prompt,
+                    messages=call_messages,
+                    tools=self.tool_registry.definitions,
+                    stream_callback=stream_listener,
+                )
+            except Exception as err:
+                err_msg = f"[Turn error: {err}]"
+                self.emit_ui("text", f"\n{err_msg}\n")
+                talk_msg = self.storage.append_message("talk", err_msg)
+                self.view.on_new_message(talk_msg.i)
+                self.emit_ui("log_talk", err_msg)
+                break
 
             # Note: thoughts (reasoning) are displayed to user above, NEVER logged (§2)
 
