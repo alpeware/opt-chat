@@ -193,6 +193,12 @@ def main() -> None:
     import_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
     import_parser.add_argument("--kind", default="note", choices=["note", "user", "talk"], help="Message kind")
 
+    # import-agy command
+    agy_import_parser = subparsers.add_parser("import-agy", help="Import an agy transcript.jsonl into OptChat memory")
+    agy_import_parser.add_argument("transcript", help="Path to transcript.jsonl or conversation ID")
+    agy_import_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+    agy_import_parser.add_argument("--skip-tools", action="store_true", help="Import only user prompts and agent talk (skipping tool noise)")
+
     args = parser.parse_args()
 
     if args.subcommand == "mcp":
@@ -230,6 +236,27 @@ def main() -> None:
                     storage.append_message(args.kind, stripped)
                 count += 1
         console.print(f"[green]Imported {count} messages as kind '{args.kind}'.[/green]")
+        storage.close()
+
+    elif args.subcommand == "import-agy":
+        from optchat.importer import import_agy_transcript
+        storage = Storage(Path(args.chat_dir))
+        storage.open()
+        view = LiveView(storage)
+        view.rebuild()
+
+        t_path = Path(args.transcript)
+        if not t_path.is_file():
+            candidate = Path.home() / ".gemini" / "antigravity-cli" / "brain" / args.transcript / ".system_generated" / "logs" / "transcript.jsonl"
+            if candidate.is_file():
+                t_path = candidate
+            else:
+                console.print(f"[red]Could not find transcript at {args.transcript} or {candidate}[/red]")
+                storage.close()
+                return
+
+        imported = import_agy_transcript(t_path, storage, view=view, skip_tool_noise=args.skip_tools)
+        console.print(f"[green]Successfully imported {imported} messages from agy transcript into {storage.chat_dir}![/green]")
         storage.close()
 
     else:
