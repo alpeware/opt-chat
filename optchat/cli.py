@@ -123,6 +123,10 @@ async def run_chat_session(
     console.print("\n[bold]Current View:[/bold]")
     console.print(f"[dim]{view.render()}[/dim]\n")
     console.print("[dim]Commands: /view, /stats, /browse, /exit[/dim]\n")
+    try:
+        export_html_to_file(storage, view, storage.chat_dir / "browse.html")
+    except Exception:
+        pass
 
     loop = asyncio.get_running_loop()
 

@@ -165,7 +165,13 @@ class TurnAgent:
 
                 await self._execute_turn_call(system_prompt, call_messages)
 
-                # 6. Commit / persist after turn (§10)
+                # 6. Auto-export HTML visualizer and persist after turn (§10)
+                try:
+                    from optchat.visualizer import export_html_to_file
+                    export_html_to_file(self.storage, self.view, self.storage.chat_dir / "browse.html")
+                except Exception:
+                    pass
+
                 if self.git_auto_commit:
                     self._git_commit()
 
