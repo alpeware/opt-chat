@@ -269,8 +269,8 @@ def main() -> None:
         # Default to chat
         asyncio.run(
             run_chat_session(
-                chat_dir=Path(getattr(args, "chat_dir", "./chat")),
-                provider_name=getattr(args, "provider", "mock"),
+                chat_dir=Path(getattr(args, "chat_dir", default_chat_dir)),
+                provider_name=getattr(args, "provider", "agy"),
                 model=getattr(args, "model", None),
                 compactor_provider_name=getattr(args, "compactor_provider", None),
                 compactor_model=getattr(args, "compactor_model", None),
