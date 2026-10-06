@@ -168,9 +168,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="OptChat: an endless chat where the AI remembers everything")
     subparsers = parser.add_subparsers(dest="subcommand")
 
+    default_chat_dir = os.path.expanduser(os.environ.get("OPTCHAT_DIR", "~/.optchat"))
+
     # chat command
     chat_parser = subparsers.add_parser("chat", help="Start an interactive chat session")
-    chat_parser.add_argument("--chat-dir", default="./chat", help="Path to chat directory (default: ./chat)")
+    chat_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
     chat_parser.add_argument("--provider", default="agy", choices=["agy", "mock", "anthropic", "openai"], help="LLM Provider (default: agy)")
     chat_parser.add_argument("--model", default=None, help="Model name (e.g. gemini-3.8-flash-high, claude-sonnet-5-5-medium)")
     chat_parser.add_argument("--compactor-provider", default=None, help="Compactor LLM Provider (default: same as provider)")
@@ -178,17 +180,17 @@ def main() -> None:
 
     # mcp command
     mcp_parser = subparsers.add_parser("mcp", help="Run OptChat Model Context Protocol (MCP) stdio server for agy")
-    mcp_parser.add_argument("--chat-dir", default="./chat", help="Path to chat directory (default: ./chat)")
+    mcp_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
 
     # browse command
     browse_parser = subparsers.add_parser("browse", help="Generate an HTML memory report")
-    browse_parser.add_argument("--chat-dir", default="./chat", help="Path to chat directory")
-    browse_parser.add_argument("--output", default="./chat/browse.html", help="Output HTML file path")
+    browse_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+    browse_parser.add_argument("--output", default=None, help="Output HTML file path (default: <chat-dir>/browse.html)")
 
     # import command
     import_parser = subparsers.add_parser("import", help="Import external history or notes")
     import_parser.add_argument("file", help="Path to input text or JSONL file")
-    import_parser.add_argument("--chat-dir", default="./chat", help="Path to chat directory")
+    import_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
     import_parser.add_argument("--kind", default="note", choices=["note", "user", "talk"], help="Message kind")
 
     args = parser.parse_args()
@@ -203,7 +205,8 @@ def main() -> None:
         storage.open()
         view = LiveView(storage)
         view.rebuild()
-        out_path = export_html_to_file(storage, view, Path(args.output))
+        target_out = Path(args.output) if args.output else storage.chat_dir / "browse.html"
+        out_path = export_html_to_file(storage, view, target_out)
         console.print(f"[green]HTML report exported to {out_path}[/green]")
         storage.close()
 

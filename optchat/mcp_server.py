@@ -250,7 +250,8 @@ class OptChatMCPServer:
 
 
 def main() -> None:
-    chat_dir = Path(os.environ.get("OPTCHAT_DIR", "./chat"))
+    raw_dir = os.environ.get("OPTCHAT_DIR", "~/.optchat")
+    chat_dir = Path(os.path.expanduser(raw_dir)).resolve()
     server = OptChatMCPServer(chat_dir)
     asyncio.run(server.run_stdio())
 
