@@ -53,7 +53,10 @@ def flatten_newlines(text: str) -> str:
 
 def check_free_level0(msg: Message) -> Optional[str]:
     """Free node at level 0: verbatim text if <= NODE bytes (§3)."""
-    raw = f"{msg.kind}: {msg.text}"
+    if msg.kind == "user" and msg.text.startswith("[") and "] " in msg.text[:40]:
+        raw = f"work: {msg.text}"
+    else:
+        raw = f"{msg.kind}: {msg.text}"
     if len(raw.encode("utf-8")) <= NODE:
         return raw
     return None

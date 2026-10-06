@@ -93,6 +93,12 @@ async def run_chat_session(
             console.print(f"[yellow bold]➜ Result:[/yellow bold] [yellow]{preview}[/yellow]\n")
         elif event_type == "settling":
             console.print(f"[dim italic]{content}[/dim italic]")
+        elif event_type == "subagent_spawn":
+            console.print(f"\n[magenta bold]➜ Subagents:[/magenta bold] [magenta]{content}[/magenta]")
+        elif event_type == "subagent_complete":
+            console.print(f"\n[magenta bold]➜ Subagents Done:[/magenta bold] [dim magenta]{content}[/dim magenta]")
+        elif event_type == "subagent_report":
+            console.print(f"\n[green bold]➜ Subagent Report:[/green bold] [green]{content}[/green]\n")
         elif event_type == "log_talk":
             console.print()
 

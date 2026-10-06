@@ -193,18 +193,74 @@ async def handle_edit_file(args: Dict[str, Any], storage: Storage, view: LiveVie
         return f"Error editing {path}: {e}"
 
 
+SPAWN_TOOL = ToolDefinition(
+    name="spawn",
+    description="Spawn one or more subagents in parallel to execute background tasks (§9). Returns subagent IDs immediately; reports arrive in the background.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "tasks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of task instructions (one subagent per task).",
+            },
+        },
+        "required": ["tasks"],
+    },
+)
+
+TELL_TOOL = ToolDefinition(
+    name="tell",
+    description="Send a message or instruction to an active background subagent between its tool calls (§9).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "The subagent ID (e.g. sub-1)."},
+            "message": {"type": "string", "description": "The message to deliver to the subagent."},
+        },
+        "required": ["id", "message"],
+    },
+)
+
+
+async def handle_spawn(args: Dict[str, Any], storage: Storage, view: LiveView, manager: Optional[Any] = None) -> str:
+    if manager is None:
+        return "Subagents are not enabled in this environment."
+    tasks = args.get("tasks", [])
+    if isinstance(tasks, str):
+        tasks = [tasks]
+    elif not isinstance(tasks, list):
+        tasks = [str(tasks)]
+    return manager.spawn(tasks)
+
+
+async def handle_tell(args: Dict[str, Any], storage: Storage, view: LiveView, manager: Optional[Any] = None) -> str:
+    if manager is None:
+        return "Subagents are not enabled in this environment."
+    sub_id = str(args.get("id", ""))
+    message = str(args.get("message", ""))
+    return manager.tell(sub_id, message)
+
+
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(self, subagent_manager: Optional[Any] = None, enable_subagents: bool = True) -> None:
+        self.subagent_manager = subagent_manager
         self.definitions: List[ToolDefinition] = []
-        self.handlers: Dict[str, ToolHandler] = {}
+        self.handlers: Dict[str, Any] = {}
         self.register(ZOOM_TOOL, handle_zoom)
         self.register(DATE_TOOL, handle_date)
         self.register(BASH_TOOL, handle_bash)
         self.register(READ_FILE_TOOL, handle_read_file)
         self.register(WRITE_FILE_TOOL, handle_write_file)
         self.register(EDIT_FILE_TOOL, handle_edit_file)
+        if enable_subagents:
+            self.register(SPAWN_TOOL, handle_spawn)
+            self.register(TELL_TOOL, handle_tell)
 
-    def register(self, defn: ToolDefinition, handler: ToolHandler) -> None:
+    def set_subagent_manager(self, manager: Any) -> None:
+        self.subagent_manager = manager
+
+    def register(self, defn: ToolDefinition, handler: Any) -> None:
         self.definitions.append(defn)
         self.handlers[defn.name] = handler
 
@@ -213,6 +269,13 @@ class ToolRegistry:
         if not handler:
             return f"Unknown tool: {name}"
         try:
+            if name in ("spawn", "tell"):
+                return await handler(args, storage, view, self.subagent_manager)
             return await handler(args, storage, view)
         except Exception as e:
             return f"Tool {name} error: {e}"
+
+
+def create_subagent_registry() -> ToolRegistry:
+    """Create tool registry for subagents (zoom, date, and ops tools, without spawn or tell per §9)."""
+    return ToolRegistry(enable_subagents=False)

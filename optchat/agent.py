@@ -60,6 +60,28 @@ class TurnAgent:
         self.is_running_turn = False
         self._abort_settle = asyncio.Event()
 
+        # Subagent manager (§9)
+        from optchat.subagent import SubagentManager
+        self.subagent_manager = SubagentManager(
+            storage=self.storage,
+            view=self.view,
+            provider=self.provider,
+            base_tools=self.tool_registry,
+            agents_md_path=self.agents_md_path,
+            on_report=self.deliver_work_report,
+            ui_callback=self.ui_callback,
+        )
+        self.tool_registry.set_subagent_manager(self.subagent_manager)
+
+    def deliver_work_report(self, report_text: str) -> None:
+        """Deliver subagent report back to master agent (§9)."""
+        self.emit_ui("subagent_report", f"➜ Subagent report received:\n{report_text}")
+        if self.is_running_turn:
+            self.midrun_queue.put_nowait(report_text)
+        else:
+            self.queue.put_nowait(report_text)
+            asyncio.create_task(self.run_turn_loop())
+
     def _get_system_prompt(self) -> str:
         """Compose constant system prompt: MASTER + VIEW_DOC + AGENTS.md (§7.2).
 

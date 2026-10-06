@@ -43,8 +43,21 @@ class AgyProvider(BaseLLMProvider):
         stream_callback: Optional[StreamCallback] = None,
     ) -> LLMResponse:
         """Execute chat turn using agy --print."""
-        # Compose single prompt with system instructions and conversation
         parts = [f"=== SYSTEM INSTRUCTIONS ===\n{system}\n"]
+
+        if tools:
+            tool_lines = ["=== AVAILABLE TOOLS ==="]
+            for t in tools:
+                tool_lines.append(f"Tool: {t.name}\nDescription: {t.description}\nParameters: {json.dumps(t.parameters)}\n")
+            tool_lines.append(
+                "When you need to call a tool, output the invocation cleanly, for example:\n"
+                "  tool_name(param1=val1, param2=val2)\n"
+                "or:\n"
+                "  ```tool_call\n"
+                '  {"name": "tool_name", "arguments": {...}}\n'
+                "  ```\n"
+            )
+            parts.insert(1, "\n".join(tool_lines))
 
         for msg in messages:
             role = msg.get("role", "user")
@@ -108,29 +121,66 @@ class AgyProvider(BaseLLMProvider):
         if stream_callback and response_text:
             stream_callback("text", response_text)
 
-        # Inspect if agy output requested a tool call (e.g. zoom(id, n))
+        # Inspect if agy output requested a tool call (spawn, zoom, date, bash, etc.)
         tool_calls: List[ToolCall] = []
-        import re
+        if tools:
+            import ast
+            import re
 
-        zoom_match = re.search(r"zoom\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", response_text, re.IGNORECASE)
-        if zoom_match:
-            tool_calls.append(
-                ToolCall(
-                    id="agy_zoom_call",
-                    name="zoom",
-                    arguments={"id": int(zoom_match.group(1)), "n": int(zoom_match.group(2))},
-                )
-            )
+            tool_names = {t.name.lower(): t.name for t in tools}
 
-        date_match = re.search(r"date\s*\(\s*(\d+)\s*\)", response_text, re.IGNORECASE)
-        if date_match and not zoom_match:
-            tool_calls.append(
-                ToolCall(
-                    id="agy_date_call",
-                    name="date",
-                    arguments={"id": int(date_match.group(1))},
-                )
-            )
+            # 1. Check for JSON block
+            json_blocks = re.findall(r"```(?:tool_call|json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
+            for jb in json_blocks:
+                try:
+                    jdata = json.loads(jb)
+                    jname = jdata.get("name") or jdata.get("tool")
+                    jargs = jdata.get("arguments") or jdata.get("parameters") or {}
+                    if jname and jname.lower() in tool_names:
+                        rname = tool_names[jname.lower()]
+                        tool_calls.append(ToolCall(id=f"agy_{rname}_json", name=rname, arguments=jargs))
+                except Exception:
+                    pass
+
+            # 2. Check for functional syntax if no json blocks matched
+            if not tool_calls:
+                pattern = r"(\b\w+)\s*\((.*?)\)"
+                for match in re.finditer(pattern, response_text, re.DOTALL):
+                    fn = match.group(1).lower()
+                    if fn in tool_names:
+                        rname = tool_names[fn]
+                        args_str = match.group(2).strip()
+                        args: Dict[str, Any] = {}
+
+                        if rname == "zoom":
+                            nums = re.findall(r"\d+", args_str)
+                            if len(nums) >= 2:
+                                args = {"id": int(nums[0]), "n": int(nums[1])}
+                        elif rname == "date":
+                            nums = re.findall(r"\d+", args_str)
+                            if nums:
+                                args = {"id": int(nums[0])}
+                        else:
+                            try:
+                                expr = ast.parse(f"{rname}({args_str})").body[0].value  # type: ignore
+                                for kw in expr.keywords:
+                                    args[kw.arg] = ast.literal_eval(kw.value)
+                                if not expr.keywords and expr.args:
+                                    val = ast.literal_eval(expr.args[0])
+                                    if rname == "spawn":
+                                        args["tasks"] = val if isinstance(val, list) else [str(val)]
+                                    elif rname == "bash":
+                                        args["command"] = str(val)
+                                    elif rname in ("read_file", "write_file", "edit_file"):
+                                        args["path"] = str(val)
+                            except Exception:
+                                if rname == "spawn":
+                                    quoted = re.findall(r"['\"](.*?)['\"]", args_str)
+                                    if quoted:
+                                        args["tasks"] = quoted
+
+                        if args:
+                            tool_calls.append(ToolCall(id=f"agy_{rname}_call", name=rname, arguments=args))
 
         return LLMResponse(
             text=response_text,
