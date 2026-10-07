@@ -25,12 +25,15 @@ from aiohttp import web
 from optchat.agent import TurnAgent
 from optchat.compactor import Compactor
 from optchat.constants import VIEW
-from optchat.visualizer import export_html_to_file
+from optchat.engine_client import EngineClient, ProxyCompactor, ProxyStorage, ProxyView
 from optchat.providers import create_provider
+from optchat.providers.agy_provider import AgyProvider
+from optchat.providers.base import BaseLLMProvider
 from optchat.storage import Storage
 from optchat.tools import ToolRegistry
 from optchat.tree import node_coords
 from optchat.view import LiveView
+from optchat.visualizer import export_html_to_file
 
 logger = logging.getLogger("optchat.web")
 
@@ -489,10 +492,11 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="brand-dot" id="status-dot"></div>
         <span>OptChat</span>
       </div>
-      <div class="stats-pills" id="stats-bar" onclick="openStats()">
-        <span class="pill" id="pill-msgs">Msgs: -</span>
-        <span class="pill" id="pill-nodes">Nodes: -</span>
-        <span class="pill" id="pill-view">View: -</span>
+      <div class="stats-pills" id="stats-bar">
+        <span class="pill" id="pill-ws" title="Click to view/change workspace" onclick="openSessionModal()">📁 opt-chat</span>
+        <span class="pill" id="pill-msgs" onclick="openStats()">Msgs: -</span>
+        <span class="pill" id="pill-nodes" onclick="openStats()">Nodes: -</span>
+        <span class="pill" id="pill-view" onclick="openStats()">View: -</span>
       </div>
       <div class="header-actions">
         <button class="btn-icon" onclick="openTreeDrawer()">📋 <span class="hide-sm">View</span></button>
@@ -682,6 +686,8 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
+    let currentWorkspace = '';
+
     async function fetchState() {
       try {
         const res = await fetch('/api/state');
@@ -692,8 +698,36 @@ HTML_PAGE = """<!DOCTYPE html>
         const pct = ((data.view_size / data.view_budget) * 100).toFixed(0);
         document.getElementById('pill-view').textContent = `View: ${pct}%`;
         document.getElementById('status-dot').style.background = data.is_settled ? '#10b981' : '#f59e0b';
+        if (data.workspace) {
+          currentWorkspace = data.workspace;
+          const parts = data.workspace.split('/').filter(Boolean);
+          const name = parts.length > 0 ? parts[parts.length - 1] : '/';
+          const wsEl = document.getElementById('pill-ws');
+          if (wsEl) wsEl.textContent = '📁 ' + name;
+        }
       } catch (e) {
         document.getElementById('status-dot').style.background = '#ef4444';
+      }
+    }
+
+    async function openSessionModal() {
+      const newWs = prompt("Active Workspace:\\n" + currentWorkspace + "\\n\\nEnter new workspace path to switch (e.g. /home/simonpure):", currentWorkspace);
+      if (newWs && newWs.trim() && newWs.trim() !== currentWorkspace) {
+        try {
+          const res = await fetch('/api/session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workspace: newWs.trim() })
+          });
+          const data = await res.json();
+          if (data.error) {
+            alert('Failed to switch workspace: ' + data.error);
+          } else {
+            fetchState();
+          }
+        } catch (e) {
+          alert('Error: ' + e.message);
+        }
       }
     }
 
@@ -1080,6 +1114,8 @@ class OptChatWebServer:
         model: Optional[str] = None,
         compactor_model: Optional[str] = None,
         timeout: float = 300.0,
+        workspace: Optional[Path] = None,
+        conversation_id: Optional[str] = None,
     ):
         self.chat_dir = Path(chat_dir).resolve()
         self.provider_name = provider_name
@@ -1087,34 +1123,63 @@ class OptChatWebServer:
         self.compactor_model = compactor_model
         self.timeout = timeout
 
-        self.storage: Optional[Storage] = None
-        self.view: Optional[LiveView] = None
-        self.compactor: Optional[Compactor] = None
+        default_ws = Path("/home/simonpure/src/alpeware/opt-chat")
+        self.workspace = (Path(workspace).resolve() if workspace else (default_ws if default_ws.exists() else Path.cwd())).resolve()
+        self.conversation_id: Optional[str] = conversation_id
+
+        self.engine_client: Optional[EngineClient] = None
+        self.is_daemon_connected: bool = False
+        self.storage: Optional[Any] = None
+        self.view: Optional[Any] = None
+        self.compactor: Optional[Any] = None
         self.agent: Optional[TurnAgent] = None
+        self.main_provider: Optional[BaseLLMProvider] = None
         self.app = web.Application()
 
         self._active_stream_queues: Set[asyncio.Queue[Dict[str, Any]]] = set()
 
     async def init_engine(self) -> None:
-        self.storage = Storage(self.chat_dir)
-        self.storage.open()
+        client = EngineClient(socket_path=self.chat_dir / "engine.sock")
+        if await client.is_daemon_alive_async(timeout=0.5):
+            logger.info("OptChat Web connected to background daemon via %s", client.socket_path)
+            self.engine_client = client
+            self.is_daemon_connected = True
+            self.storage = ProxyStorage(client, self.chat_dir)
+            self.view = ProxyView(client)
+            self.compactor = ProxyCompactor(client)
+        else:
+            logger.info("OptChat Daemon not running. Using embedded Storage & Compactor.")
+            self.engine_client = None
+            self.is_daemon_connected = False
+            self.storage = Storage(self.chat_dir)
+            self.storage.open()
 
-        self.view = LiveView(self.storage)
-        self.view.rebuild()
+            self.view = LiveView(self.storage)
+            self.view.rebuild()
 
-        main_provider = create_provider(self.provider_name, model=self.model, timeout=self.timeout)
-        comp_provider = (
-            main_provider
-            if self.compactor_model is None
-            else create_provider(self.provider_name, model=self.compactor_model, timeout=self.timeout)
+            comp_provider = (
+                create_provider(self.provider_name, model=self.compactor_model, timeout=self.timeout)
+                if self.compactor_model
+                else None
+            )
+            self.compactor = Compactor(self.storage, self.view, comp_provider)
+            self.compactor.start()
+
+        self.main_provider = create_provider(
+            self.provider_name,
+            model=self.model,
+            timeout=self.timeout,
+            workspace=str(self.workspace),
+            conversation_id=self.conversation_id,
         )
-
-        self.compactor = Compactor(self.storage, self.view, comp_provider)
-        self.compactor.start()
 
         tool_registry = ToolRegistry()
 
         def ui_listener(event_type: str, content: str) -> None:
+            # Sync conversation_id if AgyProvider captured one
+            if isinstance(self.main_provider, AgyProvider) and self.main_provider.conversation_id:
+                self.conversation_id = self.main_provider.conversation_id
+
             # Broadcast to active SSE listeners
             event_obj = {"type": event_type, "content": content}
             for q in list(self._active_stream_queues):
@@ -1123,12 +1188,15 @@ class OptChatWebServer:
                 except Exception:
                     pass
 
-        agents_md = self.chat_dir.parent / "AGENTS.md"
+        agents_md = self.workspace / "AGENTS.md"
+        if not agents_md.exists():
+            agents_md = self.chat_dir.parent / "AGENTS.md"
+
         self.agent = TurnAgent(
             storage=self.storage,
             view=self.view,
             compactor=self.compactor,
-            provider=main_provider,
+            provider=self.main_provider,
             tool_registry=tool_registry,
             agents_md_path=agents_md if agents_md.exists() else None,
             git_auto_commit=False,
@@ -1141,6 +1209,8 @@ class OptChatWebServer:
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/browse", self.handle_browse)
         self.app.router.add_get("/api/state", self.handle_api_state)
+        self.app.router.add_get("/api/session", self.handle_api_session_get)
+        self.app.router.add_post("/api/session", self.handle_api_session_post)
         self.app.router.add_get("/api/history", self.handle_api_history)
         self.app.router.add_get("/api/view", self.handle_api_view)
         self.app.router.add_get("/api/stream", self.handle_api_stream)
@@ -1186,15 +1256,72 @@ class OptChatWebServer:
         return web.Response(text=HTML_PAGE, content_type="text/html")
 
     async def handle_browse(self, request: web.Request) -> web.Response:
-        assert self.storage is not None and self.view is not None
-        browse_file = self.storage.chat_dir / "browse.html"
-        if not browse_file.exists():
-            export_html_to_file(self.storage, self.view, browse_file)
+        browse_file = self.chat_dir / "browse.html"
+        if self.is_daemon_connected and self.engine_client:
+            try:
+                await self.engine_client.call_async("export_browse")
+            except Exception:
+                pass
+        elif self.storage is not None and self.view is not None:
+            if not browse_file.exists():
+                export_html_to_file(self.storage, self.view, browse_file)
         if browse_file.exists():
             return web.FileResponse(browse_file)
         return web.Response(text="browse.html not available yet", status=404)
 
+    async def handle_api_session_get(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "workspace": str(self.workspace),
+            "conversation_id": self.conversation_id,
+            "is_daemon_connected": self.is_daemon_connected,
+            "provider": self.provider_name,
+            "model": self.model,
+        })
+
+    async def handle_api_session_post(self, request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        if "workspace" in data:
+            ws_path = Path(data["workspace"]).expanduser().resolve()
+            if not ws_path.is_dir():
+                return web.json_response({"error": f"Directory not found: {ws_path}"}, status=400)
+            self.workspace = ws_path
+            if isinstance(self.main_provider, AgyProvider):
+                self.main_provider.workspace = str(self.workspace)
+            agents_md = self.workspace / "AGENTS.md"
+            if self.agent:
+                self.agent.agents_md_path = agents_md if agents_md.exists() else None
+
+        if "conversation_id" in data:
+            conv_id = data["conversation_id"]
+            self.conversation_id = conv_id if conv_id else None
+            if isinstance(self.main_provider, AgyProvider):
+                self.main_provider.conversation_id = self.conversation_id
+                self.main_provider.last_conversation_id = self.conversation_id
+
+        return web.json_response({
+            "status": "ok",
+            "workspace": str(self.workspace),
+            "conversation_id": self.conversation_id,
+        })
+
     async def handle_api_state(self, request: web.Request) -> web.Response:
+        if self.is_daemon_connected and self.engine_client:
+            st = await self.engine_client.get_state_async()
+            return web.json_response({
+                "messages_count": st.get("messages_count", 0),
+                "tree_nodes_count": st.get("tree_nodes_count", 0),
+                "view_size": st.get("view_size", 0),
+                "view_budget": st.get("view_budget", 128000),
+                "is_settled": st.get("is_settled", True),
+                "daemon_connected": True,
+                "workspace": str(self.workspace),
+                "conversation_id": self.conversation_id,
+            })
+
         assert self.storage is not None and self.view is not None
         return web.json_response({
             "messages_count": len(self.storage.messages),
@@ -1202,16 +1329,18 @@ class OptChatWebServer:
             "view_size": self.view.compute_size(),
             "view_budget": self.view.budget,
             "is_settled": self.view.is_settled(),
+            "daemon_connected": False,
+            "workspace": str(self.workspace),
+            "conversation_id": self.conversation_id,
         })
 
     async def handle_api_history(self, request: web.Request) -> web.Response:
-        assert self.storage is not None
-        limit_str = request.query.get("limit", "50")
-        try:
-            limit = int(limit_str)
-        except ValueError:
-            limit = 50
+        limit = int(request.query.get("limit", "50"))
+        if self.is_daemon_connected and self.engine_client:
+            res = await self.engine_client.call_async("get_history", limit=limit)
+            return web.json_response(res.get("messages", []))
 
+        assert self.storage is not None
         msgs = self.storage.messages[-limit:] if limit > 0 else self.storage.messages
         result = [
             {
@@ -1227,6 +1356,14 @@ class OptChatWebServer:
         return web.json_response(result)
 
     async def handle_api_view(self, request: web.Request) -> web.Response:
+        if self.is_daemon_connected and self.engine_client:
+            res = await self.engine_client.call_async("get_view")
+            return web.json_response({
+                "size": res.get("size", 0),
+                "budget": 128000,
+                "lines": res.get("lines", []),
+            })
+
         assert self.storage is not None and self.view is not None
         lines = [part.render(self.storage) for part in self.view.parts]
         return web.json_response({
@@ -1285,7 +1422,6 @@ class OptChatWebServer:
         return web.json_response({"status": "queued", "message": message})
 
     async def handle_api_command(self, request: web.Request) -> web.Response:
-        assert self.storage is not None and self.view is not None
         try:
             data = await request.json()
         except Exception:
@@ -1294,15 +1430,37 @@ class OptChatWebServer:
         cmd = data.get("command", "").strip()
 
         if cmd == "/view":
+            if self.is_daemon_connected and self.engine_client:
+                v = await self.engine_client.get_view_async()
+                return web.json_response({"output": v})
+            assert self.view is not None
             return web.json_response({"output": self.view.render()})
 
         elif cmd == "/stats":
+            if self.is_daemon_connected and self.engine_client:
+                st = await self.engine_client.get_state_async()
+                output = (
+                    f"Messages: {st.get('messages_count', 0):,}\n"
+                    f"Tree nodes: {st.get('tree_nodes_count', 0):,}\n"
+                    f"View size: {st.get('view_size', 0):,} / {st.get('view_budget', 128000):,} bytes "
+                    f"({(st.get('view_size', 0) / max(1, st.get('view_budget', 128000))) * 100:.1f}%)\n"
+                    f"View settled: {st.get('is_settled', True)}\n"
+                    f"Engine Mode: Daemon IPC ({self.engine_client.socket_path})\n"
+                    f"Workspace: {self.workspace}\n"
+                    f"Conversation: {self.conversation_id or 'none (fresh)'}"
+                )
+                return web.json_response({"output": output})
+
+            assert self.storage is not None and self.view is not None
             output = (
                 f"Messages: {len(self.storage.messages):,}\n"
                 f"Tree nodes: {len(self.storage.tree):,}\n"
                 f"View size: {self.view.compute_size():,} / {self.view.budget:,} bytes "
                 f"({(self.view.compute_size() / self.view.budget) * 100:.1f}%)\n"
-                f"View settled: {self.view.is_settled()}"
+                f"View settled: {self.view.is_settled()}\n"
+                f"Engine Mode: Embedded Storage\n"
+                f"Workspace: {self.workspace}\n"
+                f"Conversation: {self.conversation_id or 'none (fresh)'}"
             )
             return web.json_response({"output": output})
 
@@ -1310,6 +1468,10 @@ class OptChatWebServer:
             parts = cmd.split()
             if len(parts) >= 2 and parts[1].isdigit():
                 idx = int(parts[1])
+                if self.is_daemon_connected and self.engine_client:
+                    out = await self.engine_client.date_async(idx)
+                    return web.json_response({"output": out})
+                assert self.storage is not None
                 msg = self.storage.get_message(idx)
                 if msg:
                     return web.json_response({"output": f"Message {idx}: {msg.date}"})
@@ -1319,6 +1481,11 @@ class OptChatWebServer:
         elif cmd.startswith("/note"):
             text = cmd[5:].strip()
             if text:
+                if self.is_daemon_connected and self.engine_client:
+                    res = await self.engine_client.append_message_async("note", text)
+                    m = res.get("message", {})
+                    return web.json_response({"output": f"Logged note #{m.get('i')}: {text}"})
+                assert self.storage is not None and self.view is not None
                 msg = self.storage.append_message("note", text)
                 self.view.on_new_message(msg.i)
                 if self.compactor:
@@ -1326,14 +1493,32 @@ class OptChatWebServer:
                 return web.json_response({"output": f"Logged note #{msg.i}: {text}"})
             return web.json_response({"output": "Usage: /note <text>"})
 
+        elif cmd.startswith("/workspace"):
+            parts = cmd.split(maxsplit=1)
+            if len(parts) == 2:
+                new_path = Path(parts[1].strip()).expanduser().resolve()
+                if new_path.is_dir():
+                    self.workspace = new_path
+                    if isinstance(self.main_provider, AgyProvider):
+                        self.main_provider.workspace = str(self.workspace)
+                    agents_md = self.workspace / "AGENTS.md"
+                    if self.agent:
+                        self.agent.agents_md_path = agents_md if agents_md.exists() else None
+                    return web.json_response({"output": f"Workspace switched to: {self.workspace}"})
+                return web.json_response({"output": f"Directory not found: {new_path}"})
+            return web.json_response({"output": f"Current workspace: {self.workspace}"})
+
         elif cmd == "/rebuild":
+            if self.is_daemon_connected and self.engine_client:
+                res = await self.engine_client.rebuild_async()
+                return web.json_response({"output": f"View rebuilt. Size: {res.get('size', 0):,} bytes."})
+            assert self.view is not None
             self.view.rebuild()
             return web.json_response({"output": f"View rebuilt. Size: {self.view.compute_size():,} bytes."})
 
         return web.json_response({"output": f"Unknown command: {cmd}"})
 
     async def handle_api_zoom(self, request: web.Request) -> web.Response:
-        assert self.storage is not None
         try:
             data = await request.json()
             id_ = int(data.get("id"))
@@ -1341,6 +1526,11 @@ class OptChatWebServer:
         except Exception:
             return web.json_response({"error": "Invalid id or n"}, status=400)
 
+        if self.is_daemon_connected and self.engine_client:
+            out = await self.engine_client.zoom_async(id_, n)
+            return web.json_response({"output": out})
+
+        assert self.storage is not None
         l, i = node_coords(id_, n)
 
         if n == 1:
@@ -1367,10 +1557,11 @@ class OptChatWebServer:
         return web.json_response({"output": out})
 
     def shutdown(self) -> None:
-        if self.compactor:
-            self.compactor.stop()
-        if self.storage:
-            self.storage.close()
+        if not self.is_daemon_connected:
+            if self.compactor:
+                self.compactor.stop()
+            if self.storage:
+                self.storage.close()
 
 
 def get_lan_ip() -> str:
@@ -1392,6 +1583,8 @@ def run_web_app(
     provider_name: str = "agy",
     model: Optional[str] = None,
     compactor_model: Optional[str] = None,
+    workspace: Optional[Path] = None,
+    conversation_id: Optional[str] = None,
 ) -> None:
     target_dir = Path(chat_dir or (Path.home() / ".optchat")).resolve()
     server = OptChatWebServer(
@@ -1399,6 +1592,8 @@ def run_web_app(
         provider_name=provider_name,
         model=model,
         compactor_model=compactor_model,
+        workspace=workspace,
+        conversation_id=conversation_id,
     )
 
     async def start():

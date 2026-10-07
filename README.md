@@ -38,28 +38,80 @@ pip install -e ".[dev]"
 
 ---
 
-## LLM Providers
+## Built Exclusively for Google Antigravity (agy)
 
-OptChat supports multiple LLM providers:
+OptChat is purpose-built to integrate deeply with **Google Antigravity (`agy`)**, functioning as the single, endless, persistent memory engine across all agent sessions and workspaces on your machine.
 
-| Provider | CLI Flag | Description |
-|---|---|---|
-| **Google Antigravity CLI** | `--provider agy` *(default)* | Drives local `agy` without requiring external API keys. Pipes prompts safely via `stdin` to handle large view sizes. |
-| **Anthropic Claude** | `--provider anthropic` | Direct API integration with Claude 3.5 / 3.7 Sonnet models and prompt caching. |
-| **OpenAI** | `--provider openai` | Direct API integration with GPT-4o and compatible endpoints. |
-| **Mock** | `--provider mock` | Offline deterministic provider for local testing and CI/CD pipelines. |
-
-### Using the Google Antigravity (agy) Provider
-
-The `agy` provider uses your local `agy` command-line installation. It runs turns without external API key configuration:
+No external cloud API keys or third-party proprietary LLM providers are needed: OptChat leverages your local `agy` harness, honoring your trusted workspaces, permissions, and models.
 
 ```bash
-# Start interactive chat using agy (default provider)
+# Start interactive chat using agy (default)
 optchat chat
 
-# Specify custom main and compactor models
-optchat chat --provider agy --model gemini-3.8-flash-high --compactor-model gemini-3.8-flash-low
+# Scope to a workspace and optionally resume an existing conversation
+optchat chat --workspace /home/simonpure/src/alpeware/opt-chat --conversation <uuid>
+
+# Custom main and compactor models
+optchat chat --model gemini-3.8-flash-high --compactor-model gemini-3.8-flash-low
 ```
+
+---
+
+## Architecture: Daemon & Decoupled Web Server
+
+OptChat separates the persistent memory storage & compactor engine into an independent background daemon:
+
+```
+┌────────────────────────────────────────────────────────┐
+│               OptChat Daemon (optchat daemon)          │
+│   • Single-writer lock (~/.optchat/lock)               │
+│   • Append-only log with fsync                         │
+│   • Background binary summary tree compactor           │
+│   • Fast Unix domain socket (~/.optchat/engine.sock)   │
+└──────────────▲────────────────────▲────────────────────┘
+               │                    │
+        IPC (engine.sock)    IPC (engine.sock)
+               │                    │
+┌──────────────┴─────────┐   ┌──────┴────────────────────┐
+│  Web Server (optchat)  │   │  Antigravity Hooks (agy)  │
+│  • Responsive Web UI   │   │  • PreInvocation (<chat>) │
+│  • SSE Token Streaming │   │  • PostToolUse / PostInvoc│
+│  • Workspace Scoping   │   │  • Stop (compactor pump)  │
+└────────────────────────┘   └───────────────────────────┘
+```
+
+### Running the Daemon:
+```bash
+# Start daemon in background (holds single-writer storage lock)
+optchat daemon
+
+# Or run with custom compactor model
+optchat daemon --compactor-model gemini-3.8-flash-low
+```
+
+---
+
+## Antigravity Lifecycle Hooks Integration
+
+OptChat integrates directly with Antigravity's lifecycle hooks (`hooks.json`). This ensures that **any** `agy` session on your machine—even if launched directly from the terminal or IDE—automatically receives the compressed `<chat>` memory view on `PreInvocation` and records events to persistent memory.
+
+### Install & Manage Hooks:
+```bash
+# Register global OptChat memory bridge (~/.gemini/config/hooks.json)
+optchat install-hooks
+
+# Or register for a specific project workspace (.agents/hooks.json)
+optchat install-hooks --workspace /home/simonpure/src/alpeware/opt-chat
+
+# Remove hook bridge
+optchat uninstall-hooks
+```
+
+### Hook Events Supported:
+- `PreInvocation`: Injects the latest settled `<chat>` memory tree into the agent via ephemeral system messages before the model runs.
+- `PostToolUse`: Streams tool executions and results to persistent memory.
+- `PostInvocation`: Tracks conversational progression across sessions.
+- `Stop`: Triggers background tree compaction when an execution cycle completes.
 
 ---
 
@@ -68,15 +120,20 @@ optchat chat --provider agy --model gemini-3.8-flash-high --compactor-model gemi
 OptChat includes a built-in, responsive web application designed for both desktop and mobile devices on local networks.
 
 ```bash
-# Start the web server (defaults to 0.0.0.0:8765)
+# Start the web server (connects to background daemon or runs embedded)
 optchat web
+
+# Scope to a specific workspace and resume a session
+optchat web --workspace /home/simonpure/src/alpeware/opt-chat --conversation <uuid>
 
 # Custom port and model configuration
 optchat web --host 0.0.0.0 --port 8765 --model gemini-3.8-flash-medium
 ```
 
 ### Features:
-- **Mobile & Desktop Responsive Design**: Modern dark theme with desktop sidebar, mobile navigation bar, and clean typography.
+- **Daemon-Aware Architecture**: Seamlessly connects to the background `optchat daemon` over Unix domain socket (`~/.optchat/engine.sock`). If the daemon is not running, falls back automatically to embedded storage.
+- **Workspace & Session Orchestration**: Scopes each `agy` invocation to a selected workspace directory. Switch workspaces on the fly from the UI header pill (`📁 opt-chat`) or via `POST /api/session`.
+- **Mobile & Desktop Responsive Design**: Modern dark theme with touch-friendly layout, dynamic virtual viewport, and multiline textarea input with `Ctrl+Enter` submission.
 - **Non-Blocking Asynchronous Submission**: Submit multiple consecutive queries without waiting for pending turns to finish. Requests are queued immediately (`POST /api/chat`) and processed sequentially by the agent.
 - **Persistent Server-Sent Events (SSE)**: Real-time token streaming, tool call previews, reasoning inspection, and status updates via `/api/stream`.
 - **Interactive Memory Stats**: Live monitor of message count, tree nodes, view size / budget, and compaction settlement state.
@@ -84,6 +141,7 @@ optchat web --host 0.0.0.0 --port 8765 --model gemini-3.8-flash-medium
 - **Slash Commands**:
   - `/view`: Display the current compressed context window.
   - `/stats`: View message count, tree node count, and memory budget usage.
+  - `/workspace <path>`: Query or switch active workspace path.
   - `/date <id>`: Show timestamp for a specific message ID.
   - `/note <text>`: Append an architectural note or milestone directly to persistent memory.
   - `/rebuild`: Force rebuild the live view from storage.

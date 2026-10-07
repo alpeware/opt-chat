@@ -32,12 +32,14 @@ console = Console()
 
 async def run_chat_session(
     chat_dir: Path,
-    provider_name: str = "mock",
+    provider_name: str = "agy",
     model: Optional[str] = None,
     compactor_provider_name: Optional[str] = None,
     compactor_model: Optional[str] = None,
     api_key: Optional[str] = None,
     timeout: float = 300.0,
+    workspace: Optional[str] = None,
+    conversation_id: Optional[str] = None,
 ) -> None:
     storage = Storage(chat_dir)
     storage.open()
@@ -45,12 +47,19 @@ async def run_chat_session(
     view = LiveView(storage)
     view.rebuild()
 
-    main_provider = create_provider(provider_name, model, api_key, timeout=timeout)
+    main_provider = create_provider(
+        provider_name,
+        model,
+        api_key,
+        timeout=timeout,
+        workspace=workspace,
+        conversation_id=conversation_id,
+    )
     compactor_pname = compactor_provider_name or provider_name
     comp_provider = (
         main_provider
         if compactor_pname == provider_name and compactor_model is None
-        else create_provider(compactor_pname, compactor_model, api_key)
+        else create_provider(compactor_pname, compactor_model, api_key, workspace=workspace)
     )
 
     compactor = Compactor(storage, view, comp_provider)
@@ -171,11 +180,32 @@ def main() -> None:
     # chat command
     chat_parser = subparsers.add_parser("chat", help="Start an interactive chat session")
     chat_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
-    chat_parser.add_argument("--provider", default="agy", choices=["agy", "mock", "anthropic", "openai"], help="LLM Provider (default: agy)")
-    chat_parser.add_argument("--model", default=None, help="Model name (e.g. gemini-3.8-flash-high, claude-sonnet-5-5-medium)")
+    chat_parser.add_argument("--provider", default="agy", choices=["agy", "mock"], help="LLM Provider (default: agy)")
+    chat_parser.add_argument("--model", default=None, help="Model name (e.g. gemini-3.8-flash-high)")
     chat_parser.add_argument("--compactor-provider", default=None, help="Compactor LLM Provider (default: same as provider)")
-    chat_parser.add_argument("--compactor-model", default=None, help="Compactor model name (e.g. gemini-3.8-flash-high)")
+    chat_parser.add_argument("--compactor-model", default=None, help="Compactor model name (e.g. gemini-3.8-flash-low)")
     chat_parser.add_argument("--timeout", type=float, default=300.0, help="Per-turn timeout in seconds (default: 300.0)")
+    chat_parser.add_argument("--workspace", default=None, help="Workspace path for agy execution (default: current directory)")
+    chat_parser.add_argument("--conversation", default=None, help="Antigravity conversation ID to resume")
+
+    # daemon command
+    daemon_parser = subparsers.add_parser("daemon", help="Run background OptChat memory daemon & IPC socket")
+    daemon_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+    daemon_parser.add_argument("--compactor-model", default=None, help="Compactor model name (e.g. gemini-3.8-flash-low)")
+    daemon_parser.add_argument("--socket-path", default=None, help="Unix domain socket path (default: <chat-dir>/engine.sock)")
+    daemon_parser.add_argument("--provider", default="agy", choices=["agy", "mock"], help="LLM Provider for compactor (default: agy)")
+
+    # hook command
+    hook_parser = subparsers.add_parser("hook", help="Execute Antigravity lifecycle hook")
+    hook_parser.add_argument("event", help="Lifecycle event name (pre-invocation, post-tool, post-invocation, stop)")
+
+    # install-hooks command
+    install_hooks_parser = subparsers.add_parser("install-hooks", help="Register OptChat memory bridge in Antigravity hooks.json")
+    install_hooks_parser.add_argument("--workspace", default=None, help="Workspace path (default: global ~/.gemini/config/hooks.json)")
+
+    # uninstall-hooks command
+    uninstall_hooks_parser = subparsers.add_parser("uninstall-hooks", help="Remove OptChat memory bridge from hooks.json")
+    uninstall_hooks_parser.add_argument("--workspace", default=None, help="Workspace path (default: global ~/.gemini/config/hooks.json)")
 
     # mcp command
     mcp_parser = subparsers.add_parser("mcp", help="Run OptChat Model Context Protocol (MCP) stdio server for agy")
@@ -207,14 +237,17 @@ def main() -> None:
     bulk_import_parser.add_argument("--browse", action="store_true", help="Generate browse.html after import")
     bulk_import_parser.add_argument("--force", action="store_true", help="Ignore import manifest and force re-import")
     bulk_import_parser.add_argument("--dry-run", action="store_true", help="Scan and preview what would be imported without writing")
+
     # web command
     web_parser = subparsers.add_parser("web", help="Start the responsive mobile/desktop web interface")
     web_parser.add_argument("--host", default="0.0.0.0", help="Host interface to listen on (default: 0.0.0.0)")
     web_parser.add_argument("--port", type=int, default=8765, help="Port to listen on (default: 8765)")
     web_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
-    web_parser.add_argument("--provider", default="agy", choices=["agy", "mock", "anthropic", "openai"], help="LLM Provider (default: agy)")
+    web_parser.add_argument("--provider", default="agy", choices=["agy", "mock"], help="LLM Provider (default: agy)")
     web_parser.add_argument("--model", default=None, help="Model name (e.g. gemini-3.8-flash-medium)")
     web_parser.add_argument("--compactor-model", default=None, help="Compactor model name (e.g. gemini-3.8-flash-low)")
+    web_parser.add_argument("--workspace", default=None, help="Workspace directory for agy execution (default: opt-chat)")
+    web_parser.add_argument("--conversation", default=None, help="Antigravity conversation ID to resume")
 
     args = parser.parse_args()
 
@@ -314,8 +347,37 @@ def main() -> None:
 
         storage.close()
 
+    elif args.subcommand == "daemon":
+        from optchat.daemon import run_daemon
+        socket_path = Path(args.socket_path) if args.socket_path else None
+        asyncio.run(
+            run_daemon(
+                chat_dir=Path(args.chat_dir),
+                compactor_model=args.compactor_model,
+                socket_path=socket_path,
+                provider_name=args.provider,
+            )
+        )
+
+    elif args.subcommand == "hook":
+        from optchat.hooks import handle_hook_command
+        handle_hook_command(args.event)
+
+    elif args.subcommand == "install-hooks":
+        from optchat.hooks import install_hooks
+        ws = Path(args.workspace) if args.workspace else None
+        target = install_hooks(workspace_dir=ws, global_config=(ws is None))
+        console.print(f"[green]OptChat memory bridge hooks installed to {target}[/green]")
+
+    elif args.subcommand == "uninstall-hooks":
+        from optchat.hooks import uninstall_hooks
+        ws = Path(args.workspace) if args.workspace else None
+        target = uninstall_hooks(workspace_dir=ws, global_config=(ws is None))
+        console.print(f"[yellow]OptChat memory bridge hooks removed from {target}[/yellow]")
+
     elif args.subcommand == "web":
         from optchat.web_server import run_web_app
+        ws = Path(args.workspace) if args.workspace else None
         run_web_app(
             host=args.host,
             port=args.port,
@@ -323,6 +385,8 @@ def main() -> None:
             provider_name=args.provider,
             model=args.model,
             compactor_model=args.compactor_model,
+            workspace=ws,
+            conversation_id=args.conversation,
         )
 
     else:
@@ -335,6 +399,8 @@ def main() -> None:
                 compactor_provider_name=getattr(args, "compactor_provider", None),
                 compactor_model=getattr(args, "compactor_model", None),
                 timeout=getattr(args, "timeout", 300.0),
+                workspace=getattr(args, "workspace", None),
+                conversation_id=getattr(args, "conversation", None),
             )
         )
 

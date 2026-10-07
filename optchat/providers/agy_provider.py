@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 import shutil
 from typing import Any, Dict, List, Optional
 
@@ -25,11 +26,16 @@ class AgyProvider(BaseLLMProvider):
         compact_model: str = "gemini-3.8-flash-low",
         agy_path: Optional[str] = None,
         timeout: float = 300.0,
+        workspace: Optional[str] = None,
+        conversation_id: Optional[str] = None,
     ):
         self.model = model
         self.compact_model = compact_model
         self.agy_path = agy_path or shutil.which("agy") or "/home/simonpure/.local/bin/agy"
         self.timeout = timeout
+        self.workspace = str(Path(workspace).resolve()) if workspace else os.getcwd()
+        self.conversation_id = conversation_id
+        self.last_conversation_id: Optional[str] = conversation_id
 
         if not os.path.isfile(self.agy_path):
             raise FileNotFoundError(f"Antigravity CLI (agy) not found at {self.agy_path}")
@@ -42,7 +48,7 @@ class AgyProvider(BaseLLMProvider):
         cache_breakpoints: Optional[List[int]] = None,
         stream_callback: Optional[StreamCallback] = None,
     ) -> LLMResponse:
-        """Execute chat turn using agy --print."""
+        """Execute chat turn using agy --output-format stream-json."""
         parts = [f"=== SYSTEM INSTRUCTIONS ===\n{system}\n"]
 
         if tools:
@@ -90,12 +96,15 @@ class AgyProvider(BaseLLMProvider):
             "--output-format",
             "stream-json",
         ]
+        if self.conversation_id:
+            cmd.extend(["--conversation", self.conversation_id])
 
         env = {**os.environ, "OPTCHAT_DISABLE_MCP": "1"}
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             env=env,
+            cwd=self.workspace,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -126,7 +135,13 @@ class AgyProvider(BaseLLMProvider):
                 try:
                     event_data = json.loads(raw)
                     event_type = event_data.get("event")
-                    if event_type == "step_update":
+                    if event_type == "init":
+                        cid = event_data.get("conversation_id")
+                        if cid:
+                            self.last_conversation_id = cid
+                            if not self.conversation_id:
+                                self.conversation_id = cid
+                    elif event_type == "step_update":
                         su = event_data.get("step_update", {})
                         delta = su.get("text_delta")
                         if delta:
@@ -134,7 +149,13 @@ class AgyProvider(BaseLLMProvider):
                             if stream_callback:
                                 stream_callback("text", delta)
                     elif event_type == "result":
-                        final_result_data.update(event_data.get("result", {}))
+                        res = event_data.get("result", {})
+                        final_result_data.update(res)
+                        cid = res.get("conversation_id") or event_data.get("conversation_id")
+                        if cid:
+                            self.last_conversation_id = cid
+                            if not self.conversation_id:
+                                self.conversation_id = cid
                 except Exception:
                     pass
 

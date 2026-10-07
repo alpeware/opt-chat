@@ -14,23 +14,6 @@ class ToolDefinition:
     description: str
     parameters: Dict[str, Any]
 
-    def to_anthropic(self) -> Dict[str, Any]:
-        return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": self.parameters,
-        }
-
-    def to_openai(self) -> Dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
-        }
-
 
 @dataclass
 class ToolCall:

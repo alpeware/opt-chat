@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 
 from optchat.compactor import Compactor
 from optchat.constants import VIEW
+from optchat.engine_client import EngineClient, ProxyCompactor, ProxyStorage, ProxyView
 from optchat.providers.agy_provider import AgyProvider
 from optchat.storage import Storage
 from optchat.tree import execute_date, execute_zoom
@@ -33,12 +34,21 @@ from optchat.visualizer import export_html_to_file
 class OptChatMCPServer:
     def __init__(self, chat_dir: Path):
         self.chat_dir = Path(chat_dir).resolve()
-        self.storage: Optional[Storage] = None
-        self.view: Optional[LiveView] = None
-        self.compactor: Optional[Compactor] = None
+        self.engine_client: Optional[EngineClient] = None
+        self.storage: Optional[Any] = None
+        self.view: Optional[Any] = None
+        self.compactor: Optional[Any] = None
 
     def initialize_backend(self) -> None:
         if self.storage is None:
+            client = EngineClient(socket_path=self.chat_dir / "engine.sock")
+            if client.is_daemon_alive(timeout=0.2):
+                self.engine_client = client
+                self.storage = ProxyStorage(client, self.chat_dir)
+                self.view = ProxyView(client)
+                self.compactor = ProxyCompactor(client)
+                return
+
             self.storage = Storage(self.chat_dir)
             lock_acquired = False
             try:
@@ -133,6 +143,45 @@ class OptChatMCPServer:
     async def handle_tool_call(self, name: str, arguments: Dict[str, Any]) -> str:
         self.initialize_backend()
         assert self.storage is not None and self.view is not None
+
+        if self.engine_client:
+            if name == "optchat_view":
+                return self.engine_client.get_view()
+            elif name == "optchat_zoom":
+                id_ = int(arguments.get("id", 0))
+                n = int(arguments.get("n", 1))
+                return self.engine_client.zoom(id_, n)
+            elif name == "optchat_date":
+                id_ = int(arguments.get("id", 0))
+                return self.engine_client.date(id_)
+            elif name == "optchat_log":
+                kind = arguments.get("kind", "note")
+                text = arguments.get("text", "")
+                res = self.engine_client.append_message(kind, text)
+                m = res.get("message", {})
+                return f"Logged message #{m.get('i')} [{m.get('kind')}]: {text[:80]}..."
+            elif name == "optchat_stats":
+                st = self.engine_client.get_state()
+                size = st.get("view_size", 0)
+                budget = st.get("view_budget", VIEW)
+                pct = round((size / budget) * 100, 1)
+                return (
+                    f"OptChat Memory Stats (via Daemon):\n"
+                    f"- Socket: {self.engine_client.socket_path}\n"
+                    f"- Messages: {st.get('messages_count', 0)}\n"
+                    f"- Tree Nodes: {st.get('tree_nodes_count', 0)}\n"
+                    f"- View Size: {size} / {budget} bytes ({pct}%)\n"
+                    f"- Settled: {st.get('is_settled', True)}"
+                )
+            elif name == "optchat_browse":
+                out_str = arguments.get("output_path")
+                out_file = Path(out_str) if out_str else self.chat_dir / "browse.html"
+                try:
+                    self.engine_client.call("export_browse")
+                except Exception:
+                    pass
+                return f"Report generated at {out_file.resolve()}"
+            return f"Unknown tool: {name}"
 
         # If writer lock is not held, reload latest messages and tree from disk
         if self.compactor is None:
