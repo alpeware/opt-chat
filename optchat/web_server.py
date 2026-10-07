@@ -1142,6 +1142,16 @@ class OptChatWebServer:
                 return web.json_response({"output": f"Message {idx} not found."})
             return web.json_response({"output": "Usage: /date <id>"})
 
+        elif cmd.startswith("/note"):
+            text = cmd[5:].strip()
+            if text:
+                msg = self.storage.append_message("note", text)
+                self.view.on_new_message(msg.i)
+                if self.compactor:
+                    self.compactor.pump()
+                return web.json_response({"output": f"Logged note #{msg.i}: {text}"})
+            return web.json_response({"output": "Usage: /note <text>"})
+
         elif cmd == "/rebuild":
             self.view.rebuild()
             return web.json_response({"output": f"View rebuilt. Size: {self.view.compute_size():,} bytes."})
