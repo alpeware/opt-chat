@@ -223,8 +223,25 @@ HTML_PAGE = """<!DOCTYPE html>
       margin: 8px 0;
     }
     .bubble pre code { background: none; padding: 0; }
+    .bubble hr {
+      border: 0;
+      border-top: 1px solid var(--card-border);
+      margin: 14px 0;
+      opacity: 0.8;
+    }
+    .bubble h1, .bubble h2, .bubble h3, .bubble h4 {
+      font-weight: 700;
+      margin: 14px 0 6px;
+      line-height: 1.3;
+    }
+    .bubble h1 { font-size: 1.25rem; color: #f8fafc; }
+    .bubble h2 { font-size: 1.15rem; color: #f1f5f9; }
+    .bubble h3 { font-size: 1.05rem; color: var(--accent); }
+    .bubble h4 { font-size: 0.95rem; color: #94a3b8; }
     .bubble ul, .bubble ol { margin: 8px 0 8px 20px; }
     .bubble li { margin-bottom: 4px; }
+    .bubble li.md-li { margin-left: 18px; margin-bottom: 4px; list-style-type: disc; }
+    .bubble li.md-li-num { margin-left: 18px; margin-bottom: 4px; list-style-type: none; }
     .bubble blockquote {
       border-left: 3px solid var(--accent);
       padding-left: 10px;
@@ -599,9 +616,37 @@ HTML_PAGE = """<!DOCTYPE html>
       // Plain URLs
       escaped = escaped.replace(/(^|[^"'>])(https?:\\/\\/[^\\s<]+)/g, '$1<a href="$2" target="_blank" style="color: var(--accent);">$2</a>');
 
-      // Paragraphs & newlines
+      // Paragraphs, headers, rules, lists, quotes
       const lines = escaped.split('\\n');
-      return lines.map(l => l ? `<p>${l}</p>` : '<br>').join('');
+      return lines.map(l => {
+        const trimmed = l.trim();
+        if (!trimmed) return '<br>';
+        if (/^---+$/.test(trimmed) || /^\\*\\*\\*+$/.test(trimmed) || /^___+$/.test(trimmed)) {
+          return '<hr>';
+        }
+        if (/^###\\s+(.+)$/.test(trimmed)) {
+          return trimmed.replace(/^###\\s+(.+)$/, '<h3 class="md-h3">$1</h3>');
+        }
+        if (/^##\\s+(.+)$/.test(trimmed)) {
+          return trimmed.replace(/^##\\s+(.+)$/, '<h2 class="md-h2">$1</h2>');
+        }
+        if (/^#\\s+(.+)$/.test(trimmed)) {
+          return trimmed.replace(/^#\\s+(.+)$/, '<h1 class="md-h1">$1</h1>');
+        }
+        if (/^####\\s+(.+)$/.test(trimmed)) {
+          return trimmed.replace(/^####\\s+(.+)$/, '<h4 class="md-h4">$1</h4>');
+        }
+        if (/^[\\*\\-]\\s+(.+)$/.test(trimmed)) {
+          return trimmed.replace(/^[\\*\\-]\\s+(.+)$/, '<li class="md-li">$1</li>');
+        }
+        if (/^\\d+\\.\\s+(.+)$/.test(trimmed)) {
+          return trimmed.replace(/^(\\d+\\.)\\s+(.+)$/, '<li class="md-li-num"><b>$1</b> $2</li>');
+        }
+        if (/^>\\s*(.+)$/.test(trimmed)) {
+          return trimmed.replace(/^>\\s*(.+)$/, '<blockquote>$1</blockquote>');
+        }
+        return `<p>${l}</p>`;
+      }).join('');
     }
 
     async function sendMessage() {
