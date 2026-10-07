@@ -187,3 +187,55 @@ def test_hook_command_execution(monkeypatch, tmp_path: Path):
     handle_hook_command("stop")
     out_stop = json.loads(stdout_buf_stop.getvalue())
     assert out_stop.get("decision") == "allow"
+
+
+def test_hook_ignores_compactor_via_env(monkeypatch):
+    monkeypatch.setenv("OPTCHAT_IS_COMPACTOR", "1")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+    stdout_buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout_buf)
+
+    handle_hook_command("pre-invocation")
+    out = json.loads(stdout_buf.getvalue())
+    assert out == {"injectSteps": []}
+
+    # Test stop hook with compactor env
+    stdout_buf_stop = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout_buf_stop)
+    handle_hook_command("stop")
+    out_stop = json.loads(stdout_buf_stop.getvalue())
+    assert out_stop == {"decision": "allow"}
+
+
+def test_hook_ignores_compactor_via_payload(monkeypatch):
+    monkeypatch.delenv("OPTCHAT_IS_COMPACTOR", raising=False)
+    payload = {
+        "lastUserInput": "CRITICAL REQUIREMENT: Output ONLY the single summary line directly."
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    stdout_buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout_buf)
+
+    handle_hook_command("pre-invocation")
+    out = json.loads(stdout_buf.getvalue())
+    assert out == {"injectSteps": []}
+
+
+def test_hook_ignores_compactor_via_transcript(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("OPTCHAT_IS_COMPACTOR", raising=False)
+    tpath = tmp_path / "transcript.jsonl"
+    tpath.write_text(json.dumps({
+        "step_index": 0,
+        "type": "USER_INPUT",
+        "content": "CRITICAL REQUIREMENT: Output ONLY the single summary line directly."
+    }))
+
+    payload = {"transcriptPath": str(tpath)}
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    stdout_buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout_buf)
+
+    handle_hook_command("pre-invocation")
+    out = json.loads(stdout_buf.getvalue())
+    assert out == {"injectSteps": []}
+

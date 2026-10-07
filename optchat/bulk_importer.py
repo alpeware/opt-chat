@@ -107,6 +107,11 @@ class BulkImporter:
                     "SELECT conversation_id, title, preview, step_count, last_modified_time, last_user_input_time, workspace_uris FROM conversation_summaries"
                 )
                 for cid, title, preview, steps, mtime, utime, ws_uris in cur.fetchall():
+                    # Filter out OptChat internal compaction sessions
+                    p_str = (preview or "") + " " + (title or "")
+                    if "CRITICAL REQUIREMENT: Output ONLY" in p_str or "You write the memory of OptChat" in p_str:
+                        continue
+
                     is_match = self._matches_workspace(ws_uris)
                     db_summaries[cid] = {
                         "cid": cid,
@@ -138,6 +143,9 @@ class BulkImporter:
                         try:
                             d = json.loads(stripped)
                         except Exception:
+                            continue
+                        disp = d.get("display", "")
+                        if "CRITICAL REQUIREMENT: Output ONLY" in disp or "You write the memory of OptChat" in disp:
                             continue
                         ws = d.get("workspace", "")
                         if self._matches_workspace(ws):
@@ -241,6 +249,8 @@ class BulkImporter:
 
                 if stype == "USER_INPUT":
                     raw_c = data.get("content", "")
+                    if "CRITICAL REQUIREMENT: Output ONLY" in raw_c or "You write the memory of OptChat" in raw_c:
+                        continue
                     clean_user = extract_user_text(raw_c)
                     if clean_user:
                         messages.append(("user", clean_user, ts))

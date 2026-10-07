@@ -55,6 +55,8 @@ def import_agy_transcript(
 
             if step_type == "USER_INPUT":
                 raw_c = data.get("content", "")
+                if "CRITICAL REQUIREMENT: Output ONLY" in raw_c or "You write the memory of OptChat" in raw_c:
+                    continue
                 user_text = extract_user_text(raw_c)
                 if user_text:
                     msg = storage.append_message("user", user_text)

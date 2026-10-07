@@ -34,8 +34,36 @@ def handle_hook_command(event_name: str) -> None:
         except Exception:
             pass
 
-    client = EngineClient()
     event_normalized = event_name.lower().replace("-", "_")
+
+    # Ignore internal OptChat compactor turns to prevent memory injection and pump loops
+    is_compactor = os.environ.get("OPTCHAT_IS_COMPACTOR") == "1"
+    if not is_compactor and payload:
+        last_input = payload.get("lastUserInput", "")
+        if "CRITICAL REQUIREMENT: Output ONLY the single summary line directly" in last_input or "You write the memory of OptChat" in last_input:
+            is_compactor = True
+        elif not last_input:
+            tpath_str = payload.get("transcriptPath")
+            if tpath_str and os.path.isfile(tpath_str):
+                try:
+                    with open(tpath_str, "r", encoding="utf-8", errors="ignore") as f:
+                        first_line = f.readline()
+                        if "CRITICAL REQUIREMENT" in first_line or "You write the memory of OptChat" in first_line:
+                            is_compactor = True
+                except Exception:
+                    pass
+
+    if is_compactor:
+        if event_normalized == "pre_invocation":
+            sys.stdout.write(json.dumps({"injectSteps": []}) + "\n")
+        elif event_normalized in ("pre_tool", "stop"):
+            sys.stdout.write(json.dumps({"decision": "allow"}) + "\n")
+        else:
+            sys.stdout.write("{}\n")
+        sys.stdout.flush()
+        return
+
+    client = EngineClient()
 
     if event_normalized == "pre_invocation":
         # PreInvocation hook: inject latest compressed memory view into agent prompt

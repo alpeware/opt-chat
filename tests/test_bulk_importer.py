@@ -115,3 +115,84 @@ def test_bulk_importer_idempotency_and_filter(tmp_path: Path):
     assert len(storage.messages) == 2
 
     storage.close()
+
+
+def test_bulk_importer_filters_compaction_sessions(tmp_path: Path):
+    gemini_dir = tmp_path / "gemini_compaction_test"
+    cli_dir = gemini_dir / "antigravity-cli"
+    cli_dir.mkdir(parents=True)
+
+    db_path = cli_dir / "conversation_summaries.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE conversation_summaries (
+            conversation_id TEXT PRIMARY KEY,
+            title TEXT,
+            preview TEXT,
+            step_count INTEGER,
+            last_modified_time TEXT,
+            last_user_input_time TEXT,
+            workspace_uris TEXT
+        )
+    """)
+    # Insert normal session
+    cur.execute(
+        "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("conv-user", "Build UI", "Build new interface", 2, "2026-10-01 10:00:00", "2026-10-01 10:00:00", '["file:///home/user/src/opt-chat"]'),
+    )
+    # Insert compaction session
+    cur.execute(
+        "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("conv-compaction", "Compaction Turn", "CRITICAL REQUIREMENT: Output ONLY the single summary line directly.", 2, "2026-10-01 10:05:00", "2026-10-01 10:05:00", '["file:///home/user/src/opt-chat"]'),
+    )
+    conn.commit()
+    conn.close()
+
+    # Create transcript for both
+    tpath_user = cli_dir / "brain" / "conv-user" / ".system_generated" / "logs" / "transcript.jsonl"
+    tpath_user.parent.mkdir(parents=True)
+    tpath_user.write_text(json.dumps({
+        "type": "USER_INPUT",
+        "content": "<USER_REQUEST>\nLet us add a button.\n</USER_REQUEST>",
+        "created_at": "2026-10-01T10:00:00Z",
+    }) + "\n" + json.dumps({
+        "type": "PLANNER_RESPONSE",
+        "content": "Added the button.",
+        "created_at": "2026-10-01T10:00:05Z",
+    }) + "\n")
+
+    tpath_comp = cli_dir / "brain" / "conv-compaction" / ".system_generated" / "logs" / "transcript.jsonl"
+    tpath_comp.parent.mkdir(parents=True)
+    tpath_comp.write_text(json.dumps({
+        "type": "USER_INPUT",
+        "content": "CRITICAL REQUIREMENT: Output ONLY the single summary line directly.\nSystem:\nYou write the memory of OptChat...",
+        "created_at": "2026-10-01T10:05:00Z",
+    }) + "\n" + json.dumps({
+        "type": "PLANNER_RESPONSE",
+        "content": "user: add button; talk: added.",
+        "created_at": "2026-10-01T10:05:05Z",
+    }) + "\n")
+
+    chat_dir = tmp_path / "chat_storage"
+    storage = Storage(chat_dir)
+    storage.open()
+
+    importer = BulkImporter(
+        storage=storage,
+        workspace_filter="opt-chat",
+        base_gemini_dir=gemini_dir,
+    )
+
+    convs, unattached = importer.discover()
+    assert len(convs) == 1
+    assert convs[0]["cid"] == "conv-user"
+
+    c_count, m_count = importer.import_all()
+    assert c_count == 1
+    assert m_count == 2
+    assert storage.messages[0].text == "Let us add a button."
+    assert storage.messages[1].text == "Added the button."
+
+    storage.close()
+

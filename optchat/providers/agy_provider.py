@@ -257,6 +257,32 @@ class AgyProvider(BaseLLMProvider):
             cached_tokens=usage.get("cache_read_tokens", 0),
         )
 
+    def _prune_compactor_session(self, cid: Optional[str]) -> None:
+        """Clean up ephemeral compactor conversation artifacts and database entry."""
+        if not cid:
+            return
+        try:
+            # 1. Remove ephemeral brain directory
+            brain_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain" / cid
+            if brain_dir.is_dir():
+                shutil.rmtree(brain_dir, ignore_errors=True)
+
+            # 2. Remove from conversation_summaries.db and full text index
+            db_path = Path.home() / ".gemini" / "antigravity-cli" / "conversation_summaries.db"
+            if db_path.is_file():
+                import sqlite3
+                conn = sqlite3.connect(str(db_path), timeout=2.0)
+                cur = conn.cursor()
+                cur.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?", (cid,))
+                try:
+                    cur.execute("DELETE FROM conversations_fts WHERE conversation_id = ?", (cid,))
+                except Exception:
+                    pass
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            logger.debug("Failed to prune compactor session (%s): %s", cid, e)
+
     async def compact_step(
         self,
         system: str,
@@ -291,11 +317,20 @@ class AgyProvider(BaseLLMProvider):
             "json",
         ]
 
-        env = {**os.environ, "OPTCHAT_DISABLE_MCP": "1"}
+        # Use an isolated compactor workspace so agy sessions don't collide with project directories
+        compactor_ws = Path.home() / ".optchat" / ".compactor_workspace"
+        compactor_ws.mkdir(parents=True, exist_ok=True)
+
+        env = {
+            **os.environ,
+            "OPTCHAT_DISABLE_MCP": "1",
+            "OPTCHAT_IS_COMPACTOR": "1",
+        }
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             env=env,
+            cwd=str(compactor_ws),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -315,16 +350,27 @@ class AgyProvider(BaseLLMProvider):
             err_text = stderr.decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"agy compactor failed (code {proc.returncode}): {err_text}")
 
+        res_text = ""
+        cid: Optional[str] = None
         try:
             data = json.loads(out_text)
-            return data.get("response", "").strip()
+            res_text = data.get("response", "").strip()
+            cid = data.get("conversation_id")
         except Exception:
             import re
             m = re.search(r"\{.*\}", out_text, re.DOTALL)
             if m:
                 try:
                     data = json.loads(m.group(0))
-                    return data.get("response", "").strip()
+                    res_text = data.get("response", "").strip()
+                    cid = data.get("conversation_id")
                 except Exception:
                     pass
-            return out_text
+            if not res_text:
+                res_text = out_text
+
+        # Clean up ephemeral compactor conversation from disk & summaries db
+        if cid:
+            self._prune_compactor_session(cid)
+
+        return res_text
