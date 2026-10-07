@@ -308,9 +308,10 @@ def main() -> None:
         )
 
         c_cnt, m_cnt = importer.import_all(dry_run=args.dry_run)
-        if m_cnt > 0 and not args.dry_run:
-            view.rebuild()
-            console.print(f"[bold green]Rebuilt live view. Current messages: {len(storage.messages)} | Tree nodes: {len(storage.tree)}[/bold green]")
+        if not args.dry_run:
+            if m_cnt > 0:
+                view.rebuild()
+                console.print(f"[bold green]Rebuilt live view. Current messages: {len(storage.messages)} | Tree nodes: {len(storage.tree)}[/bold green]")
 
             if args.compact:
                 asyncio.run(
