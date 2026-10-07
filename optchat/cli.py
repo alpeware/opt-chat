@@ -21,37 +21,13 @@ from rich.console import Console
 from optchat.agent import TurnAgent
 from optchat.compactor import Compactor
 from optchat.constants import VIEW
-from optchat.providers import AgyProvider, AnthropicProvider, BaseLLMProvider, MockLLMProvider, OpenAIProvider
+from optchat.providers import BaseLLMProvider, create_provider
 from optchat.storage import Storage
 from optchat.tools import ToolRegistry
 from optchat.view import LiveView
 from optchat.visualizer import export_html_to_file
 
 console = Console()
-
-
-def create_provider(
-    provider_name: str,
-    model: Optional[str] = None,
-    api_key: Optional[str] = None,
-    compact_model: Optional[str] = None,
-    timeout: float = 300.0,
-) -> BaseLLMProvider:
-    p = provider_name.lower().strip()
-    if p == "agy":
-        return AgyProvider(
-            model=model or "gemini-3.8-flash-medium",
-            compact_model=compact_model or "gemini-3.8-flash-low",
-            timeout=timeout,
-        )
-    elif p == "anthropic":
-        return AnthropicProvider(api_key=api_key, model=model or "claude-3-7-sonnet-latest", timeout=timeout)
-    elif p in ("openai", "openrouter"):
-        return OpenAIProvider(api_key=api_key, model=model or "gpt-4o", timeout=timeout)
-    elif p == "mock":
-        return MockLLMProvider()
-    else:
-        raise ValueError(f"Unknown provider: {provider_name}. Choose agy, anthropic, openai, or mock.")
 
 
 async def run_chat_session(
@@ -231,6 +207,14 @@ def main() -> None:
     bulk_import_parser.add_argument("--browse", action="store_true", help="Generate browse.html after import")
     bulk_import_parser.add_argument("--force", action="store_true", help="Ignore import manifest and force re-import")
     bulk_import_parser.add_argument("--dry-run", action="store_true", help="Scan and preview what would be imported without writing")
+    # web command
+    web_parser = subparsers.add_parser("web", help="Start the responsive mobile/desktop web interface")
+    web_parser.add_argument("--host", default="0.0.0.0", help="Host interface to listen on (default: 0.0.0.0)")
+    web_parser.add_argument("--port", type=int, default=8765, help="Port to listen on (default: 8765)")
+    web_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+    web_parser.add_argument("--provider", default="agy", choices=["agy", "mock", "anthropic", "openai"], help="LLM Provider (default: agy)")
+    web_parser.add_argument("--model", default=None, help="Model name (e.g. gemini-3.8-flash-medium)")
+    web_parser.add_argument("--compactor-model", default=None, help="Compactor model name (e.g. gemini-3.8-flash-low)")
 
     args = parser.parse_args()
 
@@ -329,6 +313,17 @@ def main() -> None:
                 console.print(f"[green]Memory report saved to {out_path}[/green]")
 
         storage.close()
+
+    elif args.subcommand == "web":
+        from optchat.web_server import run_web_app
+        run_web_app(
+            host=args.host,
+            port=args.port,
+            chat_dir=Path(args.chat_dir),
+            provider_name=args.provider,
+            model=args.model,
+            compactor_model=args.compactor_model,
+        )
 
     else:
         # Default to chat

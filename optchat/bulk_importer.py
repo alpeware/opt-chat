@@ -29,7 +29,7 @@ from optchat.importer import extract_user_text
 from optchat.storage import Message, Storage
 from optchat.view import LiveView
 from optchat.visualizer import export_html_to_file
-from optchat.cli import create_provider
+from optchat.providers import create_provider
 
 logger = logging.getLogger("optchat.bulk_importer")
 console = Console()
