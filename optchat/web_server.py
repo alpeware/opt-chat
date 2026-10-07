@@ -593,8 +593,11 @@ HTML_PAGE = """<!DOCTYPE html>
       escaped = escaped.replace(/\\*\\*([^\\*]+)\\*\\*/g, '<strong>$1</strong>');
       escaped = escaped.replace(/\\*([^\\*]+)\\*/g, '<em>$1</em>');
 
-      // URLs
-      escaped = escaped.replace(/(https?:\\/\\/[^\\s<]+)/g, '<a href="$1" target="_blank" style="color: var(--accent);">$1</a>');
+      // Markdown links: [title](url)
+      escaped = escaped.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\)]+)\\)/g, '<a href="$2" target="_blank" style="color: var(--accent); text-decoration: underline;">$1</a>');
+
+      // Plain URLs
+      escaped = escaped.replace(/(^|[^"'>])(https?:\\/\\/[^\\s<]+)/g, '$1<a href="$2" target="_blank" style="color: var(--accent);">$2</a>');
 
       // Paragraphs & newlines
       const lines = escaped.split('\\n');
@@ -624,6 +627,7 @@ HTML_PAGE = """<!DOCTYPE html>
       // Stream assistant reply
       const assistantBubble = appendMessage('talk', '', '', true);
       let streamedContent = '';
+      let sseBuffer = '';
 
       try {
         const response = await fetch('/api/chat', {
@@ -644,31 +648,56 @@ HTML_PAGE = """<!DOCTYPE html>
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\\n');
+          sseBuffer += decoder.decode(value, { stream: true });
+          const parts = sseBuffer.split('\\n\\n');
+          sseBuffer = parts.pop();
 
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const event = JSON.parse(line.slice(6));
-                if (event.type === 'token') {
-                  streamedContent += event.content;
-                  assistantBubble.innerHTML = formatMarkdown(streamedContent) + '<span class="cursor-stream"></span>';
-                  scrollToBottom();
-                } else if (event.type === 'tool_call') {
-                  const toolEl = document.createElement('details');
-                  toolEl.className = 'tool-box';
-                  toolEl.innerHTML = `<summary>⚡ Tool: ${event.content}</summary><pre>${event.content}</pre>`;
-                  document.getElementById('chat-stream').insertBefore(toolEl, assistantBubble.parentElement);
-                  scrollToBottom();
-                } else if (event.type === 'done') {
-                  fetchState();
-                }
-              } catch (e) {}
+          for (const part of parts) {
+            const trimmed = part.trim();
+            if (!trimmed) continue;
+            for (const line of trimmed.split('\\n')) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const event = JSON.parse(line.slice(6));
+                  if (event.type === 'token' || event.type === 'text') {
+                    streamedContent += event.content;
+                    assistantBubble.innerHTML = formatMarkdown(streamedContent) + '<span class="cursor-stream"></span>';
+                    scrollToBottom();
+                  } else if (event.type === 'log_talk') {
+                    if (!streamedContent || streamedContent.length < event.content.length) {
+                      streamedContent = event.content;
+                      assistantBubble.innerHTML = formatMarkdown(streamedContent);
+                      scrollToBottom();
+                    }
+                  } else if (event.type === 'settling' || event.type === 'settling_timeout') {
+                    if (!streamedContent) {
+                      assistantBubble.innerHTML = `<span style="color: var(--text-dim); font-style: italic;">⏳ ${event.content}</span>`;
+                    }
+                  } else if (event.type === 'tool_call' || event.type === 'log_tool') {
+                    const toolEl = document.createElement('details');
+                    toolEl.className = 'tool-box';
+                    toolEl.innerHTML = `<summary>⚡ Tool: ${event.content}</summary><pre>${event.content}</pre>`;
+                    document.getElementById('chat-stream').insertBefore(toolEl, assistantBubble.parentElement);
+                    scrollToBottom();
+                  } else if (event.type === 'log_echo') {
+                    const echoEl = document.createElement('details');
+                    echoEl.className = 'tool-box';
+                    echoEl.innerHTML = `<summary>📄 Tool Result</summary><pre>${event.content}</pre>`;
+                    document.getElementById('chat-stream').insertBefore(echoEl, assistantBubble.parentElement);
+                    scrollToBottom();
+                  } else if (event.type === 'error') {
+                    assistantBubble.innerHTML = `<span style="color: #ef4444;">Error: ${event.content}</span>`;
+                  } else if (event.type === 'done') {
+                    fetchState();
+                  }
+                } catch (e) {}
+              }
             }
           }
         }
-        assistantBubble.innerHTML = formatMarkdown(streamedContent);
+        if (streamedContent) {
+          assistantBubble.innerHTML = formatMarkdown(streamedContent);
+        }
       } catch (err) {
         assistantBubble.innerHTML = `<span style="color: #ef4444;">Network error: ${err.message}</span>`;
       } finally {
@@ -963,7 +992,7 @@ class OptChatWebServer:
             while not turn_task.done() or not queue.empty():
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=0.2)
-                    payload = f"data: {json.dumps(event)}\\n\\n"
+                    payload = f"data: {json.dumps(event)}\n\n"
                     await response.write(payload.encode("utf-8"))
                 except asyncio.TimeoutError:
                     continue
@@ -971,9 +1000,9 @@ class OptChatWebServer:
             # Ensure any trailing task exception is caught
             if turn_task.exception():
                 err_event = {"type": "error", "content": str(turn_task.exception())}
-                await response.write(f"data: {json.dumps(err_event)}\\n\\n".encode("utf-8"))
+                await response.write(f"data: {json.dumps(err_event)}\n\n".encode("utf-8"))
 
-            await response.write(f"data: {json.dumps({'type': 'done'})}\\n\\n".encode("utf-8"))
+            await response.write(f"data: {json.dumps({'type': 'done'})}\n\n".encode("utf-8"))
         finally:
             self._active_stream_queues.discard(queue)
             await response.write_eof()
@@ -994,10 +1023,10 @@ class OptChatWebServer:
 
         elif cmd == "/stats":
             output = (
-                f"Messages: {len(self.storage.messages):,}\\n"
-                f"Tree nodes: {len(self.storage.tree):,}\\n"
+                f"Messages: {len(self.storage.messages):,}\n"
+                f"Tree nodes: {len(self.storage.tree):,}\n"
                 f"View size: {self.view.compute_size():,} / {self.view.budget:,} bytes "
-                f"({(self.view.compute_size() / self.view.budget) * 100:.1f}%)\\n"
+                f"({(self.view.compute_size() / self.view.budget) * 100:.1f}%)\n"
                 f"View settled: {self.view.is_settled()}"
             )
             return web.json_response({"output": output})
@@ -1032,7 +1061,7 @@ class OptChatWebServer:
         if n == 1:
             msg = self.storage.get_message(i)
             if msg:
-                out = f"Verbatim Message {id_} ({msg.kind}):\\n{msg.text}"
+                out = f"Verbatim Message {id_} ({msg.kind}):\n{msg.text}"
             else:
                 out = f"Message {id_} not found."
             return web.json_response({"output": out})
@@ -1046,8 +1075,8 @@ class OptChatWebServer:
         b_text = child_b.text if child_b else "(not summarized yet: zoom it)"
 
         out = (
-            f"Zoomed line {id_}+{n} into span {half}:\\n\\n"
-            f"{id_}+{half}|{a_text}\\n"
+            f"Zoomed line {id_}+{n} into span {half}:\n\n"
+            f"{id_}+{half}|{a_text}\n"
             f"{id_ + half}+{half}|{b_text}"
         )
         return web.json_response({"output": out})
