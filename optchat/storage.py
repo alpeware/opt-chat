@@ -271,6 +271,56 @@ class Storage:
         self.messages.append(msg)
         return msg
 
+    def append_messages_batch(
+        self,
+        items: List[Tuple[str, str, Optional[str]]],
+    ) -> List[Message]:
+        """Append a batch of messages with durability, grouping by day file.
+
+        Each item is (kind, text, date_iso_optional).
+        Thoughts (reasoning) are NEVER passed here.
+        """
+        if not items:
+            return []
+
+        created_msgs: List[Message] = []
+        files_to_lines: Dict[Path, List[bytes]] = {}
+
+        now_iso_default = datetime.datetime.now().astimezone().isoformat()
+        current_idx = len(self.messages)
+
+        for kind, text, date_iso in items:
+            if kind == "echo":
+                text = cap_tool_output(text, CAP)
+
+            msg_date = date_iso if date_iso else now_iso_default
+            size = len(f"{kind}: {text}".encode("utf-8"))
+            msg = Message(i=current_idx, kind=kind, text=text, size=size, date=msg_date)
+            current_idx += 1
+            created_msgs.append(msg)
+
+            # Determine day filename from date
+            day_str = msg_date[:10]
+            if len(day_str) == 10 and day_str[4] == "-" and day_str[7] == "-":
+                fname = f"{day_str}.jsonl"
+            else:
+                fname = self._today_filename()
+
+            fpath = self.main_dir / fname
+            line_bytes = (json.dumps(msg.to_dict(), ensure_ascii=False) + "\n").encode("utf-8")
+            files_to_lines.setdefault(fpath, []).append(line_bytes)
+
+        # Write to disk and fsync once per file
+        for fpath, lines in files_to_lines.items():
+            with open(fpath, "ab") as f:
+                for lb in lines:
+                    f.write(lb)
+                f.flush()
+                os.fsync(f.fileno())
+
+        self.messages.extend(created_msgs)
+        return created_msgs
+
     def save_node(self, l: int, i: int, text: str) -> TreeNode:
         """Save a tree node with fsync durability (§2)."""
         size = len(text.encode("utf-8"))

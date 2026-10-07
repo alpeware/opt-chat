@@ -222,6 +222,16 @@ def main() -> None:
     agy_import_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
     agy_import_parser.add_argument("--skip-tools", action="store_true", help="Import only user prompts and agent talk (skipping tool noise)")
 
+    # import-bulk command
+    bulk_import_parser = subparsers.add_parser("import-bulk", help="Bulk import historical agy chats into OptChat")
+    bulk_import_parser.add_argument("--workspace", default=None, help="Filter conversations by workspace path or substring (e.g. kaggle/gemma-4-developer-agent)")
+    bulk_import_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+    bulk_import_parser.add_argument("--include-tools", action="store_true", help="Include tool calls and outputs (defaults to clean dialogue Option B)")
+    bulk_import_parser.add_argument("--compact", action="store_true", help="Run compactor to build summary tree nodes after import")
+    bulk_import_parser.add_argument("--browse", action="store_true", help="Generate browse.html after import")
+    bulk_import_parser.add_argument("--force", action="store_true", help="Ignore import manifest and force re-import")
+    bulk_import_parser.add_argument("--dry-run", action="store_true", help="Scan and preview what would be imported without writing")
+
     args = parser.parse_args()
 
     if args.subcommand == "mcp":
@@ -280,6 +290,43 @@ def main() -> None:
 
         imported = import_agy_transcript(t_path, storage, view=view, skip_tool_noise=args.skip_tools)
         console.print(f"[green]Successfully imported {imported} messages from agy transcript into {storage.chat_dir}![/green]")
+        storage.close()
+
+    elif args.subcommand == "import-bulk":
+        from optchat.bulk_importer import BulkImporter, run_bulk_compaction
+        chat_dir = Path(args.chat_dir)
+        storage = Storage(chat_dir)
+        storage.open()
+        view = LiveView(storage)
+        view.rebuild()
+
+        importer = BulkImporter(
+            storage=storage,
+            workspace_filter=args.workspace,
+            skip_tools=not args.include_tools,
+            force=args.force,
+        )
+
+        c_cnt, m_cnt = importer.import_all(dry_run=args.dry_run)
+        if m_cnt > 0 and not args.dry_run:
+            view.rebuild()
+            console.print(f"[bold green]Rebuilt live view. Current messages: {len(storage.messages)} | Tree nodes: {len(storage.tree)}[/bold green]")
+
+            if args.compact:
+                asyncio.run(
+                    run_bulk_compaction(
+                        storage=storage,
+                        view=view,
+                        provider_name=getattr(args, "provider", "agy"),
+                        model=getattr(args, "model", None),
+                    )
+                )
+
+            if args.browse:
+                target_out = storage.chat_dir / "browse.html"
+                out_path = export_html_to_file(storage, view, target_out)
+                console.print(f"[green]Memory report saved to {out_path}[/green]")
+
         storage.close()
 
     else:
