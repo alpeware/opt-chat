@@ -120,7 +120,14 @@ class TurnAgent:
 
         self.is_running_turn = True
         try:
-            while not self.queue.empty():
+            while True:
+                # 0. Move any untaken midrun messages to main queue (§7)
+                while not self.midrun_queue.empty():
+                    self.queue.put_nowait(self.midrun_queue.get_nowait())
+
+                if self.queue.empty():
+                    break
+
                 # 1. Wait until every line of view is a summary (§6)
                 self._abort_settle.clear()
                 self.compactor.pump()
@@ -171,6 +178,10 @@ class TurnAgent:
 
                 await self._execute_turn_call(system_prompt, call_messages)
 
+                # Transfer any midrun messages that the call never took back to queue (§7)
+                while not self.midrun_queue.empty():
+                    self.queue.put_nowait(self.midrun_queue.get_nowait())
+
                 # 6. Auto-export HTML visualizer and persist after turn (§10)
                 try:
                     from optchat.visualizer import export_html_to_file
@@ -184,6 +195,8 @@ class TurnAgent:
         finally:
             self.is_running_turn = False
             self.emit_ui("turn_complete", "Turn finished.")
+            if not self.queue.empty() or not self.midrun_queue.empty():
+                asyncio.create_task(self.run_turn_loop())
 
     async def _execute_turn_call(
         self,

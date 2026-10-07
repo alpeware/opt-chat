@@ -509,15 +509,92 @@ HTML_PAGE = """<!DOCTYPE html>
   </div>
 
   <script>
-    let activeTurn = false;
     let selectedLine = null;
+    let currentAssistantBubble = null;
+    let currentStreamedText = '';
+    const pendingAssistantBubbles = [];
 
-    // Load initial state & history
+    // Load initial state, history & connect persistent event stream
     window.addEventListener('DOMContentLoaded', () => {
       fetchState();
       fetchHistory();
+      connectEventStream();
       setInterval(fetchState, 5000);
     });
+
+    function connectEventStream() {
+      const evtSource = new EventSource('/api/stream');
+
+      evtSource.onmessage = function(e) {
+        try {
+          const event = JSON.parse(e.data);
+          handleStreamEvent(event);
+        } catch (err) {}
+      };
+
+      evtSource.onerror = function() {
+        evtSource.close();
+        setTimeout(connectEventStream, 2000);
+      };
+    }
+
+    function handleStreamEvent(event) {
+      if (event.type === 'token' || event.type === 'text') {
+        if (!currentAssistantBubble) {
+          currentAssistantBubble = pendingAssistantBubbles.shift() || appendMessage('talk', '', '', true);
+          currentStreamedText = '';
+        }
+        currentStreamedText += event.content;
+        currentAssistantBubble.innerHTML = formatMarkdown(currentStreamedText) + '<span class="cursor-stream"></span>';
+        scrollToBottom();
+      } else if (event.type === 'log_talk') {
+        if (!currentAssistantBubble) {
+          currentAssistantBubble = pendingAssistantBubbles.shift() || appendMessage('talk', '', '', false);
+        }
+        currentStreamedText = event.content;
+        currentAssistantBubble.innerHTML = formatMarkdown(currentStreamedText);
+        currentAssistantBubble = null;
+        currentStreamedText = '';
+        scrollToBottom();
+        fetchState();
+      } else if (event.type === 'settling' || event.type === 'settling_timeout') {
+        const target = currentAssistantBubble || (pendingAssistantBubbles.length > 0 ? pendingAssistantBubbles[0] : null);
+        if (target && !currentStreamedText) {
+          target.innerHTML = `<span style="color: var(--text-dim); font-style: italic;">⏳ ${event.content}</span>`;
+        }
+      } else if (event.type === 'tool_call' || event.type === 'log_tool') {
+        const toolEl = document.createElement('details');
+        toolEl.className = 'tool-box';
+        toolEl.innerHTML = `<summary>⚡ Tool: ${event.content}</summary><pre>${event.content}</pre>`;
+        const target = currentAssistantBubble ? currentAssistantBubble.parentElement : document.getElementById('chat-stream');
+        document.getElementById('chat-stream').insertBefore(toolEl, target);
+        scrollToBottom();
+      } else if (event.type === 'log_echo') {
+        const echoEl = document.createElement('details');
+        echoEl.className = 'tool-box';
+        echoEl.innerHTML = `<summary>📄 Tool Result</summary><pre>${event.content}</pre>`;
+        const target = currentAssistantBubble ? currentAssistantBubble.parentElement : document.getElementById('chat-stream');
+        document.getElementById('chat-stream').insertBefore(echoEl, target);
+        scrollToBottom();
+      } else if (event.type === 'error') {
+        if (currentAssistantBubble) {
+          currentAssistantBubble.innerHTML = `<span style="color: #ef4444;">Error: ${event.content}</span>`;
+          currentAssistantBubble = null;
+        } else if (pendingAssistantBubbles.length > 0) {
+          const pb = pendingAssistantBubbles.shift();
+          pb.innerHTML = `<span style="color: #ef4444;">Error: ${event.content}</span>`;
+        }
+      } else if (event.type === 'turn_complete') {
+        if (currentAssistantBubble) {
+          if (currentStreamedText) {
+            currentAssistantBubble.innerHTML = formatMarkdown(currentStreamedText);
+          }
+          currentAssistantBubble = null;
+          currentStreamedText = '';
+        }
+        fetchState();
+      }
+    }
 
     async function fetchState() {
       try {
@@ -652,107 +729,46 @@ HTML_PAGE = """<!DOCTYPE html>
     async function sendMessage() {
       const input = document.getElementById('prompt-input');
       const text = input.value.trim();
-      if (!text || activeTurn) return;
+      if (!text) return;
 
       input.value = '';
       input.style.height = '44px';
-      document.getElementById('send-btn').disabled = true;
-      activeTurn = true;
+      input.focus();
 
+      // Show user message immediately in chat
       appendMessage('user', text, new Date().toISOString());
+
+      // Create a pending assistant bubble that will receive stream events
+      const bubble = appendMessage('talk', '', '', true);
+      bubble.innerHTML = `<span style="color: var(--text-dim); font-style: italic;">⏳ Queued...</span>`;
+      pendingAssistantBubbles.push(bubble);
 
       // If slash command
       if (text.startsWith('/')) {
-        await handleSlashCommand(text);
-        activeTurn = false;
-        document.getElementById('send-btn').disabled = false;
+        await handleSlashCommand(text, bubble);
         return;
       }
 
-      // Stream assistant reply
-      const assistantBubble = appendMessage('talk', '', '', true);
-      let streamedContent = '';
-      let sseBuffer = '';
-
       try {
-        const response = await fetch('/api/chat', {
+        const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message: text })
         });
-
-        if (!response.ok) {
-          const errData = await response.json();
-          assistantBubble.innerHTML = `<span style="color: #ef4444;">Error: ${errData.error || 'Request failed'}</span>`;
-          return;
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          sseBuffer += decoder.decode(value, { stream: true });
-          const parts = sseBuffer.split('\\n\\n');
-          sseBuffer = parts.pop();
-
-          for (const part of parts) {
-            const trimmed = part.trim();
-            if (!trimmed) continue;
-            for (const line of trimmed.split('\\n')) {
-              if (line.startsWith('data: ')) {
-                try {
-                  const event = JSON.parse(line.slice(6));
-                  if (event.type === 'token' || event.type === 'text') {
-                    streamedContent += event.content;
-                    assistantBubble.innerHTML = formatMarkdown(streamedContent) + '<span class="cursor-stream"></span>';
-                    scrollToBottom();
-                  } else if (event.type === 'log_talk') {
-                    if (!streamedContent || streamedContent.length < event.content.length) {
-                      streamedContent = event.content;
-                      assistantBubble.innerHTML = formatMarkdown(streamedContent);
-                      scrollToBottom();
-                    }
-                  } else if (event.type === 'settling' || event.type === 'settling_timeout') {
-                    if (!streamedContent) {
-                      assistantBubble.innerHTML = `<span style="color: var(--text-dim); font-style: italic;">⏳ ${event.content}</span>`;
-                    }
-                  } else if (event.type === 'tool_call' || event.type === 'log_tool') {
-                    const toolEl = document.createElement('details');
-                    toolEl.className = 'tool-box';
-                    toolEl.innerHTML = `<summary>⚡ Tool: ${event.content}</summary><pre>${event.content}</pre>`;
-                    document.getElementById('chat-stream').insertBefore(toolEl, assistantBubble.parentElement);
-                    scrollToBottom();
-                  } else if (event.type === 'log_echo') {
-                    const echoEl = document.createElement('details');
-                    echoEl.className = 'tool-box';
-                    echoEl.innerHTML = `<summary>📄 Tool Result</summary><pre>${event.content}</pre>`;
-                    document.getElementById('chat-stream').insertBefore(echoEl, assistantBubble.parentElement);
-                    scrollToBottom();
-                  } else if (event.type === 'error') {
-                    assistantBubble.innerHTML = `<span style="color: #ef4444;">Error: ${event.content}</span>`;
-                  } else if (event.type === 'done') {
-                    fetchState();
-                  }
-                } catch (e) {}
-              }
-            }
-          }
-        }
-        if (streamedContent) {
-          assistantBubble.innerHTML = formatMarkdown(streamedContent);
+        if (!res.ok) {
+          const err = await res.json();
+          bubble.innerHTML = `<span style="color: #ef4444;">Error: ${err.error || 'Failed to submit'}</span>`;
+          const idx = pendingAssistantBubbles.indexOf(bubble);
+          if (idx !== -1) pendingAssistantBubbles.splice(idx, 1);
         }
       } catch (err) {
-        assistantBubble.innerHTML = `<span style="color: #ef4444;">Network error: ${err.message}</span>`;
-      } finally {
-        activeTurn = false;
-        document.getElementById('send-btn').disabled = false;
-        fetchState();
+        bubble.innerHTML = `<span style="color: #ef4444;">Network error: ${err.message}</span>`;
+        const idx = pendingAssistantBubbles.indexOf(bubble);
+        if (idx !== -1) pendingAssistantBubbles.splice(idx, 1);
       }
     }
 
-    async function handleSlashCommand(cmd) {
+    async function handleSlashCommand(cmd, bubble) {
       try {
         const res = await fetch('/api/command', {
           method: 'POST',
@@ -760,10 +776,14 @@ HTML_PAGE = """<!DOCTYPE html>
           body: JSON.stringify({ command: cmd })
         });
         const data = await res.json();
-        appendMessage('talk', data.output || 'Command executed.', new Date().toISOString());
+        const idx = pendingAssistantBubbles.indexOf(bubble);
+        if (idx !== -1) pendingAssistantBubbles.splice(idx, 1);
+        bubble.innerHTML = formatMarkdown(data.output || 'Command executed.');
         fetchState();
       } catch (e) {
-        appendMessage('talk', `Error running command: ${e.message}`, new Date().toISOString());
+        const idx = pendingAssistantBubbles.indexOf(bubble);
+        if (idx !== -1) pendingAssistantBubbles.splice(idx, 1);
+        bubble.innerHTML = `<span style="color: #ef4444;">Error running command: ${e.message}</span>`;
       }
     }
 
@@ -949,9 +969,44 @@ class OptChatWebServer:
         self.app.router.add_get("/api/state", self.handle_api_state)
         self.app.router.add_get("/api/history", self.handle_api_history)
         self.app.router.add_get("/api/view", self.handle_api_view)
+        self.app.router.add_get("/api/stream", self.handle_api_stream)
         self.app.router.add_post("/api/chat", self.handle_api_chat)
         self.app.router.add_post("/api/command", self.handle_api_command)
         self.app.router.add_post("/api/zoom", self.handle_api_zoom)
+
+    async def handle_api_stream(self, request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(
+            status=200,
+            reason="OK",
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+        await response.prepare(request)
+
+        queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+        self._active_stream_queues.add(queue)
+
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    payload = f"data: {json.dumps(event)}\n\n"
+                    await response.write(payload.encode("utf-8"))
+                except asyncio.TimeoutError:
+                    await response.write(b": keep-alive\n\n")
+        except (asyncio.CancelledError, ConnectionResetError):
+            pass
+        finally:
+            self._active_stream_queues.discard(queue)
+            try:
+                await response.write_eof()
+            except Exception:
+                pass
+
+        return response
 
     async def handle_index(self, request: web.Request) -> web.Response:
         return web.Response(text=HTML_PAGE, content_type="text/html")
@@ -1006,7 +1061,7 @@ class OptChatWebServer:
             "lines": lines,
         })
 
-    async def handle_api_chat(self, request: web.Request) -> web.StreamResponse:
+    async def handle_api_chat(self, request: web.Request) -> web.Response:
         assert self.agent is not None
         try:
             data = await request.json()
@@ -1017,42 +1072,43 @@ class OptChatWebServer:
         if not message:
             return web.json_response({"error": "Message cannot be empty"}, status=400)
 
-        response = web.StreamResponse(
-            status=200,
-            reason="OK",
-            headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-        )
-        await response.prepare(request)
+        accept = request.headers.get("Accept", "")
+        if "text/event-stream" in accept:
+            response = web.StreamResponse(
+                status=200,
+                reason="OK",
+                headers={
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+            await response.prepare(request)
 
-        queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
-        self._active_stream_queues.add(queue)
+            queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+            self._active_stream_queues.add(queue)
 
-        turn_task = asyncio.create_task(self.agent.submit_user_message(message))
+            turn_task = asyncio.create_task(self.agent.submit_user_message(message))
 
-        try:
-            while not turn_task.done() or not queue.empty():
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.2)
-                    payload = f"data: {json.dumps(event)}\n\n"
-                    await response.write(payload.encode("utf-8"))
-                except asyncio.TimeoutError:
-                    continue
+            try:
+                while not turn_task.done() or not queue.empty():
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=0.2)
+                        payload = f"data: {json.dumps(event)}\n\n"
+                        await response.write(payload.encode("utf-8"))
+                        if event.get("type") in ("turn_complete", "done"):
+                            break
+                    except asyncio.TimeoutError:
+                        continue
+            finally:
+                self._active_stream_queues.discard(queue)
+                await response.write_eof()
 
-            # Ensure any trailing task exception is caught
-            if turn_task.exception():
-                err_event = {"type": "error", "content": str(turn_task.exception())}
-                await response.write(f"data: {json.dumps(err_event)}\n\n".encode("utf-8"))
+            return response
 
-            await response.write(f"data: {json.dumps({'type': 'done'})}\n\n".encode("utf-8"))
-        finally:
-            self._active_stream_queues.discard(queue)
-            await response.write_eof()
-
-        return response
+        # Asynchronous submission: queue task immediately and return status
+        asyncio.create_task(self.agent.submit_user_message(message))
+        return web.json_response({"status": "queued", "message": message})
 
     async def handle_api_command(self, request: web.Request) -> web.Response:
         assert self.storage is not None and self.view is not None
