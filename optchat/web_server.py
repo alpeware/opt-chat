@@ -39,10 +39,11 @@ HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
   <title>OptChat Web</title>
   <style>
     :root {
+      --app-height: 100%;
       --bg: #090d16;
       --card-bg: #131b2e;
       --card-border: #1e293b;
@@ -63,19 +64,24 @@ HTML_PAGE = """<!DOCTYPE html>
     * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
     html, body {
       height: 100%;
-      height: 100dvh;
+      height: var(--app-height, 100%);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       background: var(--bg);
       color: var(--text);
       overflow: hidden;
+      width: 100%;
+      margin: 0;
+      padding: 0;
     }
     #app {
       display: flex;
       flex-direction: column;
       height: 100%;
+      height: var(--app-height, 100%);
       max-width: 900px;
       margin: 0 auto;
       position: relative;
+      overflow: hidden;
     }
 
     /* Header */
@@ -297,20 +303,22 @@ HTML_PAGE = """<!DOCTYPE html>
       background: var(--bg);
       border: 1px solid var(--card-border);
       color: #fff;
-      font-size: 0.95rem;
+      font-size: 16px; /* 16px prevents mobile browser auto-zoom on focus */
       border-radius: 12px;
-      padding: 10px 14px;
+      padding: 11px 14px;
       resize: none;
-      height: 44px;
-      max-height: 140px;
+      min-height: 46px;
+      height: 46px;
+      max-height: 160px;
       outline: none;
-      line-height: 1.4;
+      line-height: 1.45;
       font-family: inherit;
+      overflow-y: auto;
     }
     #prompt-input:focus { border-color: var(--accent); }
     #send-btn {
-      width: 44px;
-      height: 44px;
+      width: 46px;
+      height: 46px;
       border-radius: 12px;
       background: var(--accent);
       border: none;
@@ -472,8 +480,8 @@ HTML_PAGE = """<!DOCTYPE html>
         <span class="quick-pill" onclick="quickSend('/rebuild')">/rebuild</span>
       </div>
       <form class="input-form" onsubmit="event.preventDefault(); sendMessage();">
-        <textarea id="prompt-input" rows="1" placeholder="Type a message or /command..." onkeydown="handleKeyDown(event)" oninput="autoGrow(this)"></textarea>
-        <button type="submit" id="send-btn">
+        <textarea id="prompt-input" rows="1" placeholder="Type a message or /command... (Ctrl+Enter to send)" onkeydown="handleKeyDown(event)" oninput="autoGrow(this)"></textarea>
+        <button type="submit" id="send-btn" title="Send (Ctrl+Enter)">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <line x1="22" y1="2" x2="11" y2="13"></line>
             <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
@@ -514,13 +522,52 @@ HTML_PAGE = """<!DOCTYPE html>
     let currentStreamedText = '';
     const pendingAssistantBubbles = [];
 
+    function setAppHeight() {
+      const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+      document.documentElement.style.setProperty('--app-height', `${h}px`);
+      const app = document.getElementById('app');
+      if (app) app.style.height = `${h}px`;
+    }
+
     // Load initial state, history & connect persistent event stream
     window.addEventListener('DOMContentLoaded', () => {
+      setAppHeight();
       fetchState();
       fetchHistory();
       connectEventStream();
       setInterval(fetchState, 5000);
+
+      const input = document.getElementById('prompt-input');
+      if (input) {
+        input.addEventListener('focus', () => {
+          setTimeout(() => {
+            setAppHeight();
+            input.scrollIntoView({ block: 'nearest' });
+            scrollToBottom();
+          }, 300);
+        });
+        input.addEventListener('blur', () => {
+          setTimeout(() => {
+            setAppHeight();
+            scrollToBottom();
+          }, 200);
+        });
+      }
     });
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', () => {
+        setAppHeight();
+        scrollToBottom();
+      });
+      window.visualViewport.addEventListener('scroll', () => {
+        if (window.visualViewport.offsetTop > 0) {
+          window.scrollTo(0, 0);
+        }
+      });
+    }
+    window.addEventListener('resize', setAppHeight);
+    window.addEventListener('orientationchange', () => setTimeout(setAppHeight, 200));
 
     function connectEventStream() {
       const evtSource = new EventSource('/api/stream');
@@ -631,12 +678,14 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function autoGrow(textarea) {
-      textarea.style.height = '44px';
-      textarea.style.height = Math.min(textarea.scrollHeight, 140) + 'px';
+      textarea.style.height = 'auto';
+      const scrollH = textarea.scrollHeight;
+      const targetH = Math.min(Math.max(scrollH, 46), 160);
+      textarea.style.height = targetH + 'px';
     }
 
     function handleKeyDown(e) {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         sendMessage();
       }
@@ -732,8 +781,9 @@ HTML_PAGE = """<!DOCTYPE html>
       if (!text) return;
 
       input.value = '';
-      input.style.height = '44px';
+      input.style.height = '46px';
       input.focus();
+      setAppHeight();
 
       // Show user message immediately in chat
       appendMessage('user', text, new Date().toISOString());
