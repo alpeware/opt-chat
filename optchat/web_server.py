@@ -254,6 +254,45 @@ HTML_PAGE = """<!DOCTYPE html>
       color: var(--text-dim);
       margin: 8px 0;
     }
+    /* Markdown Tables */
+    .md-table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      margin: 12px 0;
+      border-radius: 8px;
+      border: 1px solid var(--card-border);
+      -webkit-overflow-scrolling: touch;
+    }
+    .bubble table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+      text-align: left;
+      line-height: 1.4;
+    }
+    .bubble th, .bubble td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--card-border);
+      border-right: 1px solid var(--card-border);
+    }
+    .bubble th:last-child, .bubble td:last-child {
+      border-right: none;
+    }
+    .bubble tr:last-child td {
+      border-bottom: none;
+    }
+    .bubble th {
+      background: rgba(255, 255, 255, 0.06);
+      font-weight: 600;
+      color: var(--accent);
+      white-space: nowrap;
+    }
+    .bubble tbody tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .bubble tbody tr:hover {
+      background: rgba(255, 255, 255, 0.04);
+    }
 
     .cursor-stream {
       display: inline-block;
@@ -742,37 +781,122 @@ HTML_PAGE = """<!DOCTYPE html>
       // Plain URLs
       escaped = escaped.replace(/(^|[^"'>])(https?:\\/\\/[^\\s<]+)/g, '$1<a href="$2" target="_blank" style="color: var(--accent);">$2</a>');
 
-      // Paragraphs, headers, rules, lists, quotes
+      // Tables, paragraphs, headers, rules, lists, quotes
       const lines = escaped.split('\\n');
-      return lines.map(l => {
-        const trimmed = l.trim();
-        if (!trimmed) return '<br>';
+      const output = [];
+      let i = 0;
+
+      function isTableSep(str) {
+        const s = str.trim();
+        if (!s.includes('|') || !s.includes('-')) return false;
+        return /^[|]?([\\s]*:?-+:?[\\s]*[|])*[\\s]*:?-+:?[\\s]*[|]?$/.test(s);
+      }
+
+      function parseCells(str) {
+        let s = str.trim();
+        if (s.startsWith('|')) s = s.slice(1);
+        if (s.endsWith('|')) s = s.slice(0, -1);
+        return s.split('|').map(c => c.trim());
+      }
+
+      function getAlign(str) {
+        const s = str.trim();
+        const l = s.startsWith(':');
+        const r = s.endsWith(':');
+        if (l && r) return 'center';
+        if (r) return 'right';
+        if (l) return 'left';
+        return '';
+      }
+
+      while (i < lines.length) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        if (!trimmed) {
+          output.push('<br>');
+          i++;
+          continue;
+        }
+
+        // Check for table header + separator
+        if (i + 1 < lines.length && line.includes('|') && isTableSep(lines[i + 1])) {
+          const headerCells = parseCells(line);
+          const sepCells = parseCells(lines[i + 1]);
+          if (headerCells.length > 0 && sepCells.length > 0) {
+            const alignments = sepCells.map(getAlign);
+            let tbl = '<div class="md-table-wrap"><table><thead><tr>';
+            headerCells.forEach((h, col) => {
+              const align = alignments[col] ? ` style="text-align: ${alignments[col]};"` : '';
+              tbl += `<th${align}>${h}</th>`;
+            });
+            tbl += '</tr></thead><tbody>';
+
+            let j = i + 2;
+            while (j < lines.length) {
+              const rowLine = lines[j].trim();
+              if (!rowLine || !rowLine.includes('|') || isTableSep(rowLine)) break;
+              const rowCells = parseCells(rowLine);
+              tbl += '<tr>';
+              for (let c = 0; c < headerCells.length; c++) {
+                const cellVal = rowCells[c] !== undefined ? rowCells[c] : '';
+                const align = alignments[c] ? ` style="text-align: ${alignments[c]};"` : '';
+                tbl += `<td${align}>${cellVal}</td>`;
+              }
+              tbl += '</tr>';
+              j++;
+            }
+            tbl += '</tbody></table></div>';
+            output.push(tbl);
+            i = j;
+            continue;
+          }
+        }
+
         if (/^---+$/.test(trimmed) || /^\\*\\*\\*+$/.test(trimmed) || /^___+$/.test(trimmed)) {
-          return '<hr>';
+          output.push('<hr>');
+          i++;
+          continue;
         }
         if (/^###\\s+(.+)$/.test(trimmed)) {
-          return trimmed.replace(/^###\\s+(.+)$/, '<h3 class="md-h3">$1</h3>');
+          output.push(trimmed.replace(/^###\\s+(.+)$/, '<h3 class="md-h3">$1</h3>'));
+          i++;
+          continue;
         }
         if (/^##\\s+(.+)$/.test(trimmed)) {
-          return trimmed.replace(/^##\\s+(.+)$/, '<h2 class="md-h2">$1</h2>');
+          output.push(trimmed.replace(/^##\\s+(.+)$/, '<h2 class="md-h2">$1</h2>'));
+          i++;
+          continue;
         }
         if (/^#\\s+(.+)$/.test(trimmed)) {
-          return trimmed.replace(/^#\\s+(.+)$/, '<h1 class="md-h1">$1</h1>');
+          output.push(trimmed.replace(/^#\\s+(.+)$/, '<h1 class="md-h1">$1</h1>'));
+          i++;
+          continue;
         }
         if (/^####\\s+(.+)$/.test(trimmed)) {
-          return trimmed.replace(/^####\\s+(.+)$/, '<h4 class="md-h4">$1</h4>');
+          output.push(trimmed.replace(/^####\\s+(.+)$/, '<h4 class="md-h4">$1</h4>'));
+          i++;
+          continue;
         }
         if (/^[\\*\\-]\\s+(.+)$/.test(trimmed)) {
-          return trimmed.replace(/^[\\*\\-]\\s+(.+)$/, '<li class="md-li">$1</li>');
+          output.push(trimmed.replace(/^[\\*\\-]\\s+(.+)$/, '<li class="md-li">$1</li>'));
+          i++;
+          continue;
         }
         if (/^\\d+\\.\\s+(.+)$/.test(trimmed)) {
-          return trimmed.replace(/^(\\d+\\.)\\s+(.+)$/, '<li class="md-li-num"><b>$1</b> $2</li>');
+          output.push(trimmed.replace(/^(\\d+\\.)\\s+(.+)$/, '<li class="md-li-num"><b>$1</b> $2</li>'));
+          i++;
+          continue;
         }
         if (/^>\\s*(.+)$/.test(trimmed)) {
-          return trimmed.replace(/^>\\s*(.+)$/, '<blockquote>$1</blockquote>');
+          output.push(trimmed.replace(/^>\\s*(.+)$/, '<blockquote>$1</blockquote>'));
+          i++;
+          continue;
         }
-        return `<p>${l}</p>`;
-      }).join('');
+        output.push(`<p>${line}</p>`);
+        i++;
+      }
+      return output.join('');
     }
 
     async function sendMessage() {
