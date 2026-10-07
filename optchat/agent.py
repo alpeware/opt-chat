@@ -126,10 +126,14 @@ class TurnAgent:
                 self.compactor.pump()
                 if not self.view.is_settled():
                     self.emit_ui("settling", "Compacting memory summaries before starting turn...")
-                settled = await self.view.settle(abort_event=self._abort_settle)
+                settled = await self.view.settle(abort_event=self._abort_settle, timeout=10.0)
                 if not settled:
-                    logger.info("Settle wait aborted or timed out. Turn skipped.")
-                    break
+                    if self._abort_settle.is_set():
+                        logger.info("Settle wait aborted by user. Turn skipped.")
+                        break
+                    else:
+                        logger.warning("Settle wait timed out; proceeding with current view state.")
+                        self.emit_ui("settling_timeout", "Compaction running in background; proceeding with turn...")
 
                 # 2. Collect all queued user messages
                 texts: List[str] = []

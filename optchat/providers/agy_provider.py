@@ -89,8 +89,6 @@ class AgyProvider(BaseLLMProvider):
             self.model,
             "--output-format",
             "stream-json",
-            "--print",
-            full_prompt,
         ]
 
         env = {**os.environ, "OPTCHAT_DISABLE_MCP": "1"}
@@ -98,6 +96,7 @@ class AgyProvider(BaseLLMProvider):
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             env=env,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -105,6 +104,15 @@ class AgyProvider(BaseLLMProvider):
         full_text_chunks: List[str] = []
         final_result_data: Dict[str, Any] = {}
         stderr_chunks: List[str] = []
+
+        async def write_stdin():
+            assert proc.stdin is not None
+            try:
+                proc.stdin.write(full_prompt.encode("utf-8"))
+                await proc.stdin.drain()
+            finally:
+                proc.stdin.close()
+                await proc.stdin.wait_closed()
 
         async def read_stdout():
             assert proc.stdout is not None
@@ -140,7 +148,7 @@ class AgyProvider(BaseLLMProvider):
 
         try:
             await asyncio.wait_for(
-                asyncio.gather(read_stdout(), read_stderr()),
+                asyncio.gather(write_stdin(), read_stdout(), read_stderr()),
                 timeout=self.timeout,
             )
             await proc.wait()
@@ -260,8 +268,6 @@ class AgyProvider(BaseLLMProvider):
             self.compact_model,
             "--output-format",
             "json",
-            "--print",
-            full_prompt,
         ]
 
         env = {**os.environ, "OPTCHAT_DISABLE_MCP": "1"}
@@ -269,12 +275,16 @@ class AgyProvider(BaseLLMProvider):
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             env=env,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
 
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=full_prompt.encode("utf-8")),
+                timeout=self.timeout,
+            )
         except asyncio.TimeoutError:
             proc.kill()
             raise TimeoutError("agy compactor step timed out")
@@ -284,5 +294,16 @@ class AgyProvider(BaseLLMProvider):
             err_text = stderr.decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"agy compactor failed (code {proc.returncode}): {err_text}")
 
-        data = json.loads(out_text)
-        return data.get("response", "").strip()
+        try:
+            data = json.loads(out_text)
+            return data.get("response", "").strip()
+        except Exception:
+            import re
+            m = re.search(r"\{.*\}", out_text, re.DOTALL)
+            if m:
+                try:
+                    data = json.loads(m.group(0))
+                    return data.get("response", "").strip()
+                except Exception:
+                    pass
+            return out_text
