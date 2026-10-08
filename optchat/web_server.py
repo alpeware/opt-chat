@@ -197,6 +197,73 @@ HTML_PAGE = """<!DOCTYPE html>
       color: #e9d5ff;
       font-size: 0.85rem;
     }
+    .message-row.work { align-items: flex-start; }
+    .work .bubble {
+      background: #18112e;
+      border: 1px solid #4c1d95;
+      border-left: 4px solid var(--purple);
+      color: #f1f5f9;
+      border-bottom-left-radius: 4px;
+    }
+    .work .message-sender {
+      color: #c084fc;
+      font-weight: 600;
+    }
+
+    .subagent-card {
+      font-size: 0.85rem;
+      background: #18112e;
+      border: 1px solid #4c1d95;
+      border-left: 4px solid var(--purple);
+      padding: 10px 14px;
+      border-radius: 10px;
+      width: 100%;
+      max-width: 90%;
+      margin: 6px 0;
+      color: #cbd5e1;
+    }
+    .subagent-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 600;
+      font-size: 0.88rem;
+      color: #d8b4fe;
+      margin-bottom: 6px;
+    }
+    .subagent-badge {
+      background: rgba(168, 85, 247, 0.25);
+      color: #c084fc;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .subagent-prompt {
+      font-size: 0.82rem;
+      color: #cbd5e1;
+      margin-bottom: 6px;
+      line-height: 1.4;
+    }
+    .subagent-tools {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 6px;
+    }
+    .subagent-tool-item {
+      font-size: 0.78rem;
+      font-family: monospace;
+      background: #0d091a;
+      border: 1px solid #2e1065;
+      padding: 6px 10px;
+      border-radius: 6px;
+      color: #a78bfa;
+    }
+    .subagent-tool-item summary { cursor: pointer; outline: none; }
+    .subagent-tool-item pre { margin-top: 4px; white-space: pre-wrap; font-size: 0.74rem; color: #94a3b8; }
+
     .tool-box {
       font-size: 0.82rem;
       background: #0f172a;
@@ -666,6 +733,60 @@ HTML_PAGE = """<!DOCTYPE html>
         const target = currentAssistantBubble ? currentAssistantBubble.parentElement : document.getElementById('chat-stream');
         document.getElementById('chat-stream').insertBefore(echoEl, target);
         scrollToBottom();
+      } else if (event.type === 'subagent_spawn') {
+        const card = document.createElement('div');
+        card.className = 'subagent-card';
+        card.id = 'active-subagent-card';
+        const role = (event.extra && event.extra.role) || 'Subagent';
+        const typeName = (event.extra && event.extra.typeName) || 'research';
+        const prompt = (event.extra && event.extra.prompt) || event.content;
+        card.innerHTML = `
+          <div class="subagent-header">
+            <span>🚀 Subagent: <b>${role}</b></span>
+            <span class="subagent-badge">${typeName}</span>
+          </div>
+          <div class="subagent-prompt">${formatMarkdown(prompt)}</div>
+          <div class="subagent-tools" id="subagent-tools-container"></div>
+        `;
+        const target = currentAssistantBubble ? currentAssistantBubble.parentElement : document.getElementById('chat-stream');
+        document.getElementById('chat-stream').insertBefore(card, target);
+        scrollToBottom();
+      } else if (event.type === 'subagent_tool') {
+        let toolsContainer = document.getElementById('subagent-tools-container');
+        if (!toolsContainer) {
+          const toolEl = document.createElement('details');
+          toolEl.className = 'tool-box';
+          toolEl.style.borderLeftColor = 'var(--purple)';
+          toolEl.innerHTML = `<summary>⚡ ${event.content}</summary><pre>${JSON.stringify(event.extra || {}, null, 2)}</pre>`;
+          const target = currentAssistantBubble ? currentAssistantBubble.parentElement : document.getElementById('chat-stream');
+          document.getElementById('chat-stream').insertBefore(toolEl, target);
+        } else {
+          const toolItem = document.createElement('details');
+          toolItem.className = 'subagent-tool-item';
+          const toolName = (event.extra && event.extra.tool) || 'tool';
+          const argsPreview = JSON.stringify((event.extra && event.extra.args) || {});
+          toolItem.innerHTML = `<summary>⚡ ${toolName}: ${argsPreview.slice(0, 90)}${argsPreview.length > 90 ? '...' : ''}</summary><pre>${JSON.stringify(event.extra || {}, null, 2)}</pre>`;
+          toolsContainer.appendChild(toolItem);
+        }
+        scrollToBottom();
+      } else if (event.type === 'subagent_complete') {
+        const card = document.getElementById('active-subagent-card');
+        if (card) {
+          card.removeAttribute('id');
+          const badge = card.querySelector('.subagent-badge');
+          if (badge) {
+            badge.textContent = 'Completed';
+            badge.style.background = 'rgba(16, 185, 129, 0.25)';
+            badge.style.color = '#34d399';
+          }
+        }
+        scrollToBottom();
+      } else if (event.type === 'subagent_report') {
+        const repText = (event.extra && event.extra.report) || event.content;
+        const role = (event.extra && event.extra.role) || 'Subagent';
+        appendMessage('work', `### 📋 Subagent Report: ${role}\n\n${repText}`, new Date().toISOString(), false);
+        scrollToBottom();
+        fetchState();
       } else if (event.type === 'error') {
         if (currentAssistantBubble) {
           currentAssistantBubble.innerHTML = `<span style="color: #ef4444;">Error: ${event.content}</span>`;
@@ -776,7 +897,7 @@ HTML_PAGE = """<!DOCTYPE html>
       
       const sender = document.createElement('span');
       sender.className = 'message-sender';
-      sender.textContent = kind === 'user' ? 'You' : (kind === 'talk' ? 'OptChat' : kind.toUpperCase());
+      sender.textContent = kind === 'user' ? 'You' : (kind === 'talk' ? 'OptChat' : (kind === 'work' ? 'SUBAGENT' : kind.toUpperCase()));
       
       const bubble = document.createElement('div');
       bubble.className = 'bubble';
@@ -1147,6 +1268,7 @@ class OptChatWebServer:
             self.storage = ProxyStorage(client, self.chat_dir)
             self.view = ProxyView(client)
             self.compactor = ProxyCompactor(client)
+            asyncio.create_task(self._listen_to_daemon_events())
         else:
             logger.info("OptChat Daemon not running. Using embedded Storage & Compactor.")
             self.engine_client = None
@@ -1204,6 +1326,23 @@ class OptChatWebServer:
         )
 
         self._setup_routes()
+
+    async def _listen_to_daemon_events(self) -> None:
+        """Stream real-time daemon events (including agy subagent activities) to connected web clients."""
+        while self.is_daemon_connected:
+            try:
+                assert self.engine_client is not None
+                async for evt in self.engine_client.subscribe_events():
+                    for q in list(self._active_stream_queues):
+                        try:
+                            q.put_nowait(evt)
+                        except Exception:
+                            pass
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug("Daemon event subscription retry: %s", e)
+                await asyncio.sleep(2.0)
 
     def _setup_routes(self) -> None:
         self.app.router.add_get("/", self.handle_index)
@@ -1351,7 +1490,7 @@ class OptChatWebServer:
                 "date": m.date,
             }
             for m in msgs
-            if m.kind in ("user", "talk", "note")
+            if m.kind in ("user", "talk", "note", "work")
         ]
         return web.json_response(result)
 

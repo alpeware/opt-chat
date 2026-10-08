@@ -239,3 +239,104 @@ def test_hook_ignores_compactor_via_transcript(monkeypatch, tmp_path: Path):
     out = json.loads(stdout_buf.getvalue())
     assert out == {"injectSteps": []}
 
+
+@pytest.mark.asyncio
+async def test_daemon_subagent_events_and_report_recording(tmp_path: Path):
+    sock_path = tmp_path / "engine.sock"
+    daemon = OptChatDaemon(
+        chat_dir=tmp_path,
+        socket_path=sock_path,
+        provider_name="mock",
+    )
+    daemon.start_in_thread()
+    try:
+        client = EngineClient(socket_path=sock_path)
+        assert client.is_daemon_alive(timeout=2.0)
+
+        received_events = []
+        stop_sub = asyncio.Event()
+
+        async def sub_worker():
+            async for evt in client.subscribe_events():
+                received_events.append(evt)
+                if stop_sub.is_set():
+                    break
+
+        sub_task = asyncio.create_task(sub_worker())
+        await asyncio.sleep(0.1)
+
+        # 1. Test subagent spawn event via pre_tool
+        spawn_payload = {
+            "conversationId": "parent-123",
+            "toolCall": {
+                "name": "invoke_subagent",
+                "args": {
+                    "Subagents": [
+                        {"Role": "Research Specialist", "TypeName": "research", "Prompt": "Search for latest news"}
+                    ]
+                }
+            }
+        }
+        res1 = await client.call_async("hook_event", event="pre_tool", payload=spawn_payload)
+        assert res1.get("status") == "ok"
+        await asyncio.sleep(0.1)
+        assert any(e.get("type") == "subagent_spawn" and "Research Specialist" in e.get("content", "") for e in received_events)
+
+        # 2. Test subagent tool execution via post_tool
+        tool_payload = {
+            "conversationId": "subagent-456",
+            "parentConversationId": "parent-123",
+            "agentName": "Research Specialist",
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": "curl https://example.com"}
+            }
+        }
+        res2 = await client.call_async("hook_event", event="post_tool", payload=tool_payload)
+        assert res2.get("status") == "ok"
+        await asyncio.sleep(0.1)
+        assert any(e.get("type") == "subagent_tool" and "curl https://example.com" in e.get("content", "") for e in received_events)
+
+        # 3. Test subagent report delivery via send_message
+        report_payload = {
+            "conversationId": "subagent-456",
+            "parentConversationId": "parent-123",
+            "agentName": "Research Specialist",
+            "toolCall": {
+                "name": "send_message",
+                "args": {"Recipient": "parent-123", "Message": "Analysis complete: all systems nominal."}
+            }
+        }
+        res3 = await client.call_async("hook_event", event="post_tool", payload=report_payload)
+        assert res3.get("status") == "ok"
+        await asyncio.sleep(0.1)
+        assert any(e.get("type") == "subagent_report" and "all systems nominal" in e.get("content", "") for e in received_events)
+
+        # Verify recorded into memory storage as kind="work"
+        hist = await client.call_async("get_history", limit=10)
+        msgs = hist.get("messages", [])
+        work_msgs = [m for m in msgs if m.get("kind") == "work"]
+        assert len(work_msgs) == 1
+        assert "Analysis complete: all systems nominal." in work_msgs[0].get("text")
+
+        # 4. Test subagent completion via stop hook
+        stop_payload = {
+            "conversationId": "subagent-456",
+            "parentConversationId": "parent-123",
+            "agentName": "Research Specialist"
+        }
+        res4 = await client.call_async("hook_event", event="stop", payload=stop_payload)
+        assert res4.get("status") == "ok"
+        await asyncio.sleep(0.1)
+        assert any(e.get("type") == "subagent_complete" and "Research Specialist" in e.get("content", "") for e in received_events)
+
+        stop_sub.set()
+        sub_task.cancel()
+        try:
+            await sub_task
+        except asyncio.CancelledError:
+            pass
+
+    finally:
+        daemon.stop_in_thread()
+

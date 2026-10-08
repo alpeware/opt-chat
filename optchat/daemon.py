@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import signal
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from optchat.compactor import Compactor
 from optchat.constants import VIEW
@@ -25,6 +25,49 @@ from optchat.view import LiveView
 from optchat.visualizer import export_html_to_file
 
 logger = logging.getLogger("optchat.daemon")
+
+
+def clean_message_text(text: Any) -> str:
+    """Strip extraneous escaped JSON quotes or formatting from model reports."""
+    if not isinstance(text, str):
+        return str(text)
+    s = text.strip()
+    if s.startswith('"') and s.endswith('"') and len(s) >= 2:
+        try:
+            return json.loads(s)
+        except Exception:
+            s = s[1:-1]
+    elif s.startswith('"') and not s.endswith('"'):
+        s = s[1:]
+    return s.strip()
+
+
+def extract_subagent_report_from_transcript(transcript_path: str) -> Optional[str]:
+    """Extract subagent report from its transcript.jsonl if send_message wasn't called."""
+    if not transcript_path or not os.path.isfile(transcript_path):
+        return None
+    report: Optional[str] = None
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    step = json.loads(line)
+                    # 1. Prefer send_message tool call
+                    for tc in step.get("tool_calls", []):
+                        if tc.get("name") == "send_message":
+                            msg = tc.get("args", {}).get("Message")
+                            if msg:
+                                report = msg
+                    # 2. Check for final assistant content if no send_message yet
+                    if not report and step.get("type") == "PLANNER_RESPONSE" and step.get("content"):
+                        report = step.get("content")
+                except Exception:
+                    continue
+    except Exception as e:
+        logger.debug("Failed reading subagent transcript %s: %s", transcript_path, e)
+    return report
 
 
 class OptChatDaemon:
@@ -45,6 +88,17 @@ class OptChatDaemon:
         self.compactor: Optional[Compactor] = None
         self.server: Optional[asyncio.Server] = None
         self._running = False
+        self._event_subscribers: Set[asyncio.Queue[Dict[str, Any]]] = set()
+        self._active_subagents: Dict[str, Dict[str, Any]] = {}
+
+    def broadcast(self, event_type: str, content: str, extra: Optional[Dict[str, Any]] = None) -> None:
+        """Broadcast real-time event to all connected subscriber clients (Web UI / CLI)."""
+        evt = {"type": event_type, "content": content, "extra": extra or {}}
+        for q in list(self._event_subscribers):
+            try:
+                q.put_nowait(evt)
+            except Exception:
+                pass
 
     async def start(self) -> None:
         """Start the storage, compactor, and IPC socket server."""
@@ -147,6 +201,9 @@ class OptChatDaemon:
 
                 try:
                     req = json.loads(raw)
+                    if req.get("action") == "subscribe_events":
+                        await self._handle_subscription(reader, writer)
+                        return
                     res = await self._dispatch(req)
                 except Exception as e:
                     res = {"status": "error", "error": str(e)}
@@ -157,8 +214,38 @@ class OptChatDaemon:
         except (asyncio.CancelledError, ConnectionResetError):
             pass
         finally:
-            writer.close()
-            await writer.wait_closed()
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    async def _handle_subscription(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Handle long-lived event subscription stream for UI / clients."""
+        queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+        self._event_subscribers.add(queue)
+        try:
+            ack = json.dumps({"status": "subscribed"}) + "\n"
+            writer.write(ack.encode("utf-8"))
+            await writer.drain()
+
+            while self._running:
+                try:
+                    evt = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    line = json.dumps(evt) + "\n"
+                    writer.write(line.encode("utf-8"))
+                    await writer.drain()
+                except asyncio.TimeoutError:
+                    writer.write(b": keep-alive\n")
+                    await writer.drain()
+        except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError):
+            pass
+        finally:
+            self._event_subscribers.discard(queue)
 
     async def _dispatch(self, req: Dict[str, Any]) -> Dict[str, Any]:
         assert self.storage is not None and self.view is not None
@@ -281,9 +368,11 @@ class OptChatDaemon:
         return {"status": "error", "error": f"Unknown action: {action}"}
 
     async def _handle_hook_event(self, event: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle events from Antigravity hooks (PreInvocation, PostToolUse, PostInvocation, Stop)."""
+        """Handle events from Antigravity hooks (PreInvocation, PreToolUse, PostToolUse, PostInvocation, Stop)."""
         conv_id = payload.get("conversationId", "unknown")
+        parent_id = payload.get("parentConversationId")
         workspace = (payload.get("workspacePaths") or [""])[0]
+        agent_name = payload.get("agentName", "")
 
         if event == "pre_invocation":
             assert self.view is not None
@@ -295,21 +384,135 @@ class OptChatDaemon:
                 "is_settled": self.view.is_settled(),
             }
 
+        elif event == "pre_tool":
+            tool_call = payload.get("toolCall", {})
+            name = tool_call.get("name", "")
+            args = tool_call.get("args", {})
+            if name == "invoke_subagent":
+                subagents = args.get("Subagents", [])
+                if isinstance(subagents, str):
+                    try:
+                        subagents = json.loads(subagents)
+                    except Exception:
+                        subagents = []
+                for sub in subagents:
+                    role = sub.get("Role", "Subagent")
+                    tname = sub.get("TypeName", "subagent")
+                    prompt = sub.get("Prompt", "")
+                    summary = f"Spawned subagent: {role} ({tname}) — {prompt[:120]}"
+                    self.broadcast("subagent_spawn", summary, extra={"role": role, "typeName": tname, "prompt": prompt})
+            return {"status": "ok"}
+
         elif event == "post_tool":
             tool_call = payload.get("toolCall", {})
             name = tool_call.get("name", "unknown")
             args = tool_call.get("args", {})
             error = payload.get("error")
-            text = f"Tool '{name}' in session {conv_id[:8]} (workspace: {workspace}): args={json.dumps(args)}"
-            if error:
-                text += f" | error={error}"
-            # Optionally log significant tool calls
+            result = payload.get("result")
+
+            # 1. If running inside an internal subagent (parentConversationId is present)
+            if parent_id:
+                sub_role = agent_name or self._active_subagents.get(conv_id, {}).get("role", "Subagent")
+
+                # Subagent reporting back via send_message
+                if name == "send_message":
+                    msg_content = args.get("Message", "")
+                    if msg_content:
+                        clean_msg = clean_message_text(msg_content)
+                        # Broadcast subagent report to UI
+                        self.broadcast(
+                            "subagent_report",
+                            f"[{sub_role}] {clean_msg}",
+                            extra={"role": sub_role, "report": clean_msg, "conversationId": conv_id},
+                        )
+                        # Record into OptChat storage as 'work'
+                        if self.storage and self.view:
+                            work_msg = self.storage.append_message("work", f"[{sub_role}] {clean_msg}")
+                            self.view.on_new_message(work_msg.i)
+                            if self.compactor:
+                                self.compactor.pump()
+                        return {"status": "ok"}
+
+                # Intermediate tool execution by the subagent
+                args_str = json.dumps(args)
+                if len(args_str) > 140:
+                    args_str = args_str[:140] + "..."
+                tool_desc = f"[{sub_role}] ⚡ {name}: {args_str}"
+                if error:
+                    tool_desc += f" (error: {error})"
+                self.broadcast(
+                    "subagent_tool",
+                    tool_desc,
+                    extra={
+                        "role": sub_role,
+                        "tool": name,
+                        "args": args,
+                        "error": error,
+                        "result": str(result)[:300] if result else None,
+                        "conversationId": conv_id,
+                    },
+                )
+                return {"status": "ok"}
+
+            # 2. If parent agent tool call was invoke_subagent
+            if name == "invoke_subagent":
+                subagents = args.get("Subagents", [])
+                if isinstance(subagents, str):
+                    try:
+                        subagents = json.loads(subagents)
+                    except Exception:
+                        subagents = []
+                for sub in subagents:
+                    role = sub.get("Role", "Subagent")
+                    tname = sub.get("TypeName", "subagent")
+                    prompt = sub.get("Prompt", "")
+                    self.broadcast(
+                        "subagent_spawn",
+                        f"Spawned subagent: {role} ({tname}) — {prompt[:120]}",
+                        extra={"role": role, "typeName": tname, "prompt": prompt},
+                    )
+                return {"status": "ok"}
+
             return {"status": "ok"}
 
         elif event == "post_invocation":
             return {"status": "ok"}
 
         elif event == "stop":
+            if parent_id:
+                sub_role = agent_name or self._active_subagents.get(conv_id, {}).get("role", "Subagent")
+                self.broadcast(
+                    "subagent_complete",
+                    f"Subagent [{sub_role}] completed.",
+                    extra={"role": sub_role, "conversationId": conv_id},
+                )
+
+                # Check if report needs to be extracted from transcript (e.g. if send_message was not used)
+                tpath = payload.get("transcriptPath")
+                if tpath and os.path.isfile(tpath):
+                    report = extract_subagent_report_from_transcript(tpath)
+                    if report:
+                        clean_rep = clean_message_text(report)
+                        already_logged = False
+                        if self.storage and self.storage.messages:
+                            for m in self.storage.messages[-5:]:
+                                if m.kind == "work" and (clean_rep[:60] in m.text or m.text[:60] in clean_rep):
+                                    already_logged = True
+                                    break
+                        if not already_logged:
+                            self.broadcast(
+                                "subagent_report",
+                                f"[{sub_role}] {clean_rep}",
+                                extra={"role": sub_role, "report": clean_rep, "conversationId": conv_id},
+                            )
+                            if self.storage and self.view:
+                                work_msg = self.storage.append_message("work", f"[{sub_role}] {clean_rep}")
+                                self.view.on_new_message(work_msg.i)
+
+                if self.compactor:
+                    self.compactor.pump()
+                return {"status": "ok"}
+
             # Turn loop finished; trigger compactor pump
             if self.compactor:
                 self.compactor.pump()

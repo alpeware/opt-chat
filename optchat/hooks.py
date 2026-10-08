@@ -85,6 +85,17 @@ def handle_hook_command(event_name: str) -> None:
         sys.stdout.write(json.dumps(response) + "\n")
         sys.stdout.flush()
 
+    elif event_normalized == "pre_tool":
+        # PreToolUse hook (fires for invoke_subagent)
+        try:
+            if client.is_daemon_alive(timeout=0.5):
+                client.call("hook_event", event="pre_tool", payload=payload, timeout=1.0)
+        except Exception:
+            pass
+
+        sys.stdout.write(json.dumps({"decision": "allow"}) + "\n")
+        sys.stdout.flush()
+
     elif event_normalized == "post_tool":
         # PostToolUse hook: stream tool execution to engine
         try:
@@ -159,6 +170,18 @@ def install_hooks(workspace_dir: Optional[Path] = None, global_config: bool = Tr
                 "type": "command",
                 "command": f"{optchat_bin} hook pre-invocation",
                 "timeout": 5,
+            }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "invoke_subagent",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f"{optchat_bin} hook pre-tool",
+                        "timeout": 5,
+                    }
+                ],
             }
         ],
         "PostToolUse": [

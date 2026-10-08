@@ -11,7 +11,7 @@ import json
 import os
 from pathlib import Path
 import socket
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 
 class EngineClient:
@@ -90,6 +90,36 @@ class EngineClient:
             if not raw:
                 raise ConnectionError("Empty response from OptChat daemon")
             return json.loads(raw)
+        finally:
+            writer.close()
+    async def subscribe_events(self) -> AsyncIterator[Dict[str, Any]]:
+        """Asynchronously stream events from the daemon event bus."""
+        if not self.socket_path.exists():
+            raise ConnectionError(f"OptChat daemon is not running (socket not found at {self.socket_path})")
+
+        reader, writer = await asyncio.open_unix_connection(str(self.socket_path))
+        try:
+            req = {"action": "subscribe_events"}
+            writer.write((json.dumps(req) + "\n").encode("utf-8"))
+            await writer.drain()
+
+            ack_line = await reader.readline()
+            ack = json.loads(ack_line.decode("utf-8"))
+            if ack.get("status") != "subscribed":
+                raise RuntimeError(f"Subscription failed: {ack}")
+
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                raw = line.decode("utf-8").strip()
+                if not raw or raw.startswith(":"):
+                    continue
+                try:
+                    evt = json.loads(raw)
+                    yield evt
+                except Exception:
+                    continue
         finally:
             writer.close()
             await writer.wait_closed()
