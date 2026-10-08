@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+  <title>OptChat Web</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header>
+      <div class="brand">
+        <div class="brand-dot" id="status-dot"></div>
+        <span>OptChat</span>
+      </div>
+      <div class="stats-pills" id="stats-bar">
+        <span class="pill" id="pill-ws" title="Click to view/change workspace" onclick="openSessionModal()">📁 opt-chat</span>
+        <span class="pill" id="pill-msgs" onclick="openStats()">Msgs: -</span>
+        <span class="pill" id="pill-nodes" onclick="openStats()">Nodes: -</span>
+        <span class="pill" id="pill-view" onclick="openStats()">View: -</span>
+      </div>
+      <div class="header-actions">
+        <button class="btn-icon" onclick="openTreeDrawer()">📋 <span class="hide-sm">View</span></button>
+        <button class="btn-icon" onclick="window.open('/browse', '_blank')">🌳 <span class="hide-sm">Browse</span></button>
+      </div>
+    </header>
+
+    <!-- Chat Messages -->
+    <div id="chat-stream">
+      <div class="message-row talk">
+        <div class="message-header">
+          <span class="message-sender">OptChat</span>
+        </div>
+        <div class="bubble">
+          👋 Connected to OptChat memory engine. Type a message or try <code>/view</code>, <code>/stats</code>, or <code>/browse</code>.
+        </div>
+      </div>
+    </div>
+
+    <!-- Input Footer -->
+    <footer>
+      <div class="quick-bar">
+        <span class="quick-pill" onclick="quickSend('/view')">/view</span>
+        <span class="quick-pill" onclick="quickSend('/stats')">/stats</span>
+        <span class="quick-pill" onclick="window.open('/browse', '_blank')">/browse</span>
+        <span class="quick-pill" onclick="quickSend('/rebuild')">/rebuild</span>
+      </div>
+      <form class="input-form" onsubmit="event.preventDefault(); sendMessage();">
+        <textarea id="prompt-input" rows="1" placeholder="Type a message or /command... (Ctrl+Enter to send)" onkeydown="handleKeyDown(event)" oninput="autoGrow(this)"></textarea>
+        <button type="submit" id="send-btn" title="Send (Ctrl+Enter)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </form>
+    </footer>
+
+    <!-- Tree Drawer -->
+    <div class="drawer-overlay" id="tree-drawer">
+      <div class="drawer">
+        <div class="drawer-header">
+          <span>Compressed Memory Tree (&lt;chat&gt;)</span>
+          <button class="btn-icon" onclick="closeTreeDrawer()">✕</button>
+        </div>
+        <div class="drawer-content" id="tree-content">
+          <p style="color: var(--text-dim); text-align: center;">Loading tree view...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Action Sheet for Line Zoom/Date -->
+    <div class="drawer-overlay" id="action-sheet" onclick="closeActionSheet()">
+      <div class="action-sheet" onclick="event.stopPropagation()">
+        <p style="font-size: 0.8rem; color: var(--accent); font-weight: 700;" id="action-sheet-title">Line: 0+1</p>
+        <p style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 6px;" id="action-sheet-text">Preview...</p>
+        <button class="action-btn" onclick="executeZoomAction()">🔍 Zoom Line (finer details / verbatim)</button>
+        <button class="action-btn" onclick="executeDateAction()">📅 View Date / Timestamp</button>
+        <button class="action-btn" onclick="copyLineText()">📋 Copy Text</button>
+        <button class="action-btn action-cancel" onclick="closeActionSheet()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

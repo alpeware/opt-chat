@@ -27,7 +27,7 @@ async def test_web_server_endpoints(tmp_path: Path):
     await client.start_server()
 
     try:
-        # 1. Test index HTML
+        # 1. Test index HTML & static assets
         res = await client.get("/")
         assert res.status == 200
         text = await res.text()
@@ -35,9 +35,20 @@ async def test_web_server_endpoints(tmp_path: Path):
         assert "<!DOCTYPE html>" in text
         assert "katex.min.css" in text
         assert "katex.min.js" in text
-        assert "renderMathToken" in text
-        assert "msg-details" in text
-        assert "formatTimestamp" in text
+        assert "/static/style.css" in text
+        assert "/static/app.js" in text
+
+        # Test static assets are served
+        res_css = await client.get("/static/style.css")
+        assert res_css.status == 200
+        css_text = await res_css.text()
+        assert "msg-details" in css_text
+
+        res_js = await client.get("/static/app.js")
+        assert res_js.status == 200
+        js_text = await res_js.text()
+        assert "renderMathToken" in js_text
+        assert "formatTimestamp" in js_text
 
         # 2. Test api/state
         res = await client.get("/api/state")

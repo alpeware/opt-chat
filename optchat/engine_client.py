@@ -79,7 +79,7 @@ class EngineClient:
         data = (json.dumps(payload) + "\n").encode("utf-8")
 
         reader, writer = await asyncio.wait_for(
-            asyncio.open_unix_connection(str(self.socket_path)),
+            asyncio.open_unix_connection(str(self.socket_path), limit=16 * 1024 * 1024),
             timeout=timeout,
         )
         try:
@@ -99,7 +99,7 @@ class EngineClient:
         if not self.socket_path.exists():
             raise ConnectionError(f"OptChat daemon is not running (socket not found at {self.socket_path})")
 
-        reader, writer = await asyncio.open_unix_connection(str(self.socket_path))
+        reader, writer = await asyncio.open_unix_connection(str(self.socket_path), limit=16 * 1024 * 1024)
         try:
             req = {"action": "subscribe_events"}
             writer.write((json.dumps(req) + "\n").encode("utf-8"))

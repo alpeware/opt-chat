@@ -128,6 +128,7 @@ class OptChatDaemon:
         self.server = await asyncio.start_unix_server(
             self._handle_client,
             path=str(self.socket_path),
+            limit=16 * 1024 * 1024,
         )
         self._running = True
         logger.info("OptChat Daemon listening on %s", self.socket_path)
