@@ -1128,6 +1128,9 @@ function formatMarkdown(text) {
 
 // User Actions & Commands
 async function sendMessage() {
+  if (isRecordingVoice) {
+    stopVoiceDictation();
+  }
   const input = document.getElementById('prompt-input');
   const text = input.value.trim();
   if (!text) return;
@@ -1294,3 +1297,161 @@ function copyLineText() {
 function openStats() {
   quickSend('/stats');
 }
+
+// Voice Dictation & Audio Waveform Visualizer
+let isRecordingVoice = false;
+let speechRecognizer = null;
+let audioContext = null;
+let audioStream = null;
+let animFrameId = null;
+let initialPromptText = '';
+
+async function toggleVoiceDictation() {
+  if (isRecordingVoice) {
+    stopVoiceDictation();
+  } else {
+    await startVoiceDictation();
+  }
+}
+
+async function startVoiceDictation() {
+  const micBtn = document.getElementById('btn-mic');
+  const voiceBar = document.getElementById('voice-bar');
+  const statusText = document.getElementById('voice-status-text');
+  const promptInput = document.getElementById('prompt-input');
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition && !navigator.mediaDevices?.getUserMedia) {
+    alert("Speech recognition is not supported in this browser.");
+    return;
+  }
+
+  try {
+    // 1. Initialize AudioContext and Analyser for live waveform visualization
+    if (navigator.mediaDevices?.getUserMedia) {
+      audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioContext.createMediaStreamSource(audioStream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 64;
+      source.connect(analyser);
+
+      const canvas = document.getElementById('voice-canvas');
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+
+        function drawWaveform() {
+          if (!isRecordingVoice) return;
+          animFrameId = requestAnimationFrame(drawWaveform);
+          analyser.getByteFrequencyData(dataArray);
+
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          const barWidth = (canvas.width / bufferLength) * 1.5;
+          let x = 0;
+
+          for (let i = 0; i < bufferLength; i++) {
+            const barHeight = (dataArray[i] / 255) * canvas.height;
+            const r = Math.min(255, 120 + dataArray[i]);
+            const g = Math.max(30, 180 - dataArray[i]);
+            const b = 250;
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.fillRect(x, (canvas.height - barHeight) / 2, barWidth - 1, Math.max(2, barHeight));
+            x += barWidth;
+          }
+        }
+        drawWaveform();
+      }
+    }
+
+    // 2. Initialize SpeechRecognition if available
+    initialPromptText = promptInput ? promptInput.value : '';
+    if (initialPromptText && !initialPromptText.endsWith(' ')) {
+      initialPromptText += ' ';
+    }
+
+    if (SpeechRecognition) {
+      speechRecognizer = new SpeechRecognition();
+      speechRecognizer.continuous = true;
+      speechRecognizer.interimResults = true;
+      speechRecognizer.lang = navigator.language || 'en-US';
+
+      speechRecognizer.onresult = (event) => {
+        let transcript = '';
+        for (let i = 0; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        if (promptInput) {
+          promptInput.value = initialPromptText + transcript;
+          autoGrow(promptInput);
+          promptInput.scrollTop = promptInput.scrollHeight;
+        }
+      };
+
+      speechRecognizer.onerror = (e) => {
+        console.warn('Speech recognition error:', e.error);
+        if (e.error === 'not-allowed') {
+          if (statusText) statusText.textContent = 'Mic denied';
+          setTimeout(stopVoiceDictation, 1500);
+        }
+      };
+
+      speechRecognizer.onend = () => {
+        if (isRecordingVoice) {
+          try { speechRecognizer.start(); } catch (_) {}
+        }
+      };
+
+      speechRecognizer.start();
+    }
+
+    isRecordingVoice = true;
+    if (micBtn) micBtn.classList.add('recording');
+    if (voiceBar) voiceBar.style.display = 'flex';
+    if (statusText) statusText.textContent = 'Listening...';
+  } catch (err) {
+    console.error("Failed to access microphone:", err);
+    alert("Microphone permission denied or not available: " + err.message);
+    stopVoiceDictation();
+  }
+}
+
+function stopVoiceDictation() {
+  isRecordingVoice = false;
+
+  const micBtn = document.getElementById('btn-mic');
+  const voiceBar = document.getElementById('voice-bar');
+  if (micBtn) micBtn.classList.remove('recording');
+  if (voiceBar) voiceBar.style.display = 'none';
+
+  if (speechRecognizer) {
+    try {
+      speechRecognizer.onend = null;
+      speechRecognizer.stop();
+    } catch (_) {}
+    speechRecognizer = null;
+  }
+
+  if (animFrameId) {
+    cancelAnimationFrame(animFrameId);
+    animFrameId = null;
+  }
+
+  if (audioStream) {
+    audioStream.getTracks().forEach(track => track.stop());
+    audioStream = null;
+  }
+
+  if (audioContext) {
+    try { audioContext.close(); } catch (_) {}
+    audioContext = null;
+  }
+
+  const promptInput = document.getElementById('prompt-input');
+  if (promptInput) {
+    promptInput.focus();
+    autoGrow(promptInput);
+  }
+}
+

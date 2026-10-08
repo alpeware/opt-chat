@@ -171,6 +171,7 @@ class OptChatWebServer:
         self.app.router.add_post("/api/chat", self.handle_api_chat)
         self.app.router.add_post("/api/command", self.handle_api_command)
         self.app.router.add_post("/api/zoom", self.handle_api_zoom)
+        self.app.router.add_post("/api/voice", self.handle_api_voice)
 
     async def handle_api_stream(self, request: web.Request) -> web.StreamResponse:
         response = web.StreamResponse(
@@ -542,6 +543,21 @@ class OptChatWebServer:
             "is_leaf": False,
             "children": children,
         })
+
+    async def handle_api_voice(self, request: web.Request) -> web.Response:
+        """Handle voice recording transcription upload endpoint."""
+        try:
+            transcript = ""
+            if request.content_type == "application/json":
+                data = await request.json()
+                transcript = data.get("text", "")
+            return web.json_response({
+                "status": "ok",
+                "text": transcript,
+                "message": "Voice dictation received",
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
 
     def shutdown(self) -> None:
         if self._daemon_event_task and not self._daemon_event_task.done():
