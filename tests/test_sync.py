@@ -88,3 +88,86 @@ def test_sync_payload_application(tmp_path: Path):
 
     store_a.close()
     store_b.close()
+
+
+def test_fork_reconciliation_tree_invalidation(tmp_path: Path):
+    store = Storage(tmp_path / "fork_store")
+    store.open()
+
+    # Pre-populate 4 messages
+    m0 = store.append_message("user", "Msg 0")
+    m1 = store.append_message("talk", "Msg 1")
+    m2 = store.append_message("user", "Msg 2")
+    m3 = store.append_message("talk", "Msg 3")
+
+    # Add tree nodes: (1, 0) covers 0..1, (1, 1) covers 2..3
+    store.save_node(1, 0, "Summary of 0 and 1")
+    store.save_node(1, 1, "Summary of 2 and 3")
+    assert store.has_node(1, 0)
+    assert store.has_node(1, 1)
+
+    # Remote payload with an offline message inserted right before m2
+    # m2 has date, let's create a message with earlier date than m2
+    offline_msg = Message(
+        i=99,
+        kind="note",
+        text="Offline note from phone",
+        size=25,
+        date=m1.date + "_interleaved",  # Interleaves between m1 and m2
+        key=m1.date + "_interleaved#phone",
+    )
+
+    remote_payload = {
+        "device": "phone",
+        "total_messages": 1,
+        "messages": [offline_msg.to_dict()],
+        "tree": [],
+    }
+
+    res = apply_sync_payload(store, remote_payload)
+    assert res["status"] == "ok"
+    assert len(store.messages) == 5
+
+    # Node (1, 0) covers [0, 2) which was unchanged prefix <= first_diff_idx -> preserved!
+    assert store.has_node(1, 0)
+    assert store.get_node(1, 0).text == "Summary of 0 and 1"
+
+    # Node (1, 1) spanned into the rewritten message zone -> invalidated!
+    assert not store.has_node(1, 1)
+
+    store.close()
+
+
+def test_peer_discovery_and_ssh_hosts(tmp_path: Path, monkeypatch):
+    import json
+    from optchat.sync import get_configured_peers, get_ssh_config_hosts
+
+    # Test config.json peers
+    chat_dir = tmp_path / ".optchat"
+    chat_dir.mkdir(parents=True)
+    cfg_file = chat_dir / "config.json"
+    cfg_file.write_text(json.dumps({"peers": ["desktop", "phone", "laptop"]}))
+
+    peers = get_configured_peers(chat_dir)
+    assert peers == ["desktop", "phone", "laptop"]
+
+    # Test ssh config parser
+    fake_ssh_dir = tmp_path / ".ssh"
+    fake_ssh_dir.mkdir()
+    ssh_cfg = fake_ssh_dir / "config"
+    ssh_cfg.write_text(
+        "Host desktop\n"
+        "    HostName 192.168.1.10\n"
+        "\n"
+        "Host phone laptop\n"
+        "    Port 2222\n"
+        "\n"
+        "Host *\n"
+        "    ServerAliveInterval 60\n"
+    )
+
+    hosts = get_ssh_config_hosts(ssh_cfg)
+    assert "desktop" in hosts
+    assert "phone" in hosts
+    assert "laptop" in hosts
+    assert "*" not in hosts

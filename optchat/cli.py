@@ -204,7 +204,8 @@ def main() -> None:
 
     # sync command
     sync_parser = subparsers.add_parser("sync", help="Synchronize memory idempotently with a remote peer over SSH")
-    sync_parser.add_argument("peer", help="Remote SSH host or user@host (e.g. desktop, laptop, phone)")
+    sync_parser.add_argument("peer", nargs="?", default=None, help="Remote SSH host or user@host (e.g. desktop, laptop, phone)")
+    sync_parser.add_argument("--all", action="store_true", help="Sync with all configured peers in ~/.optchat/config.json")
     sync_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
     sync_parser.add_argument("--remote-dir", default=None, help="Remote chat directory (default: ~/.optchat)")
 
@@ -405,30 +406,52 @@ def main() -> None:
 
     elif args.subcommand == "sync":
         from optchat.engine_client import EngineClient
-        from optchat.sync import sync_payload_over_ssh, export_sync_payload, apply_sync_payload
+        from optchat.sync import (
+            sync_payload_over_ssh,
+            export_sync_payload,
+            apply_sync_payload,
+            get_configured_peers,
+            get_ssh_config_hosts,
+        )
         chat_dir = Path(args.chat_dir)
+        peers_to_sync: List[str] = []
+        if args.peer:
+            peers_to_sync = [args.peer]
+        elif args.all or not args.peer:
+            peers_to_sync = get_configured_peers(chat_dir)
+            if not peers_to_sync:
+                ssh_hosts = get_ssh_config_hosts()
+                if ssh_hosts:
+                    console.print(f"[yellow]No peer specified and no peers configured in {chat_dir}/config.json.[/yellow]")
+                    console.print(f"[cyan]Detected SSH host aliases: {', '.join(ssh_hosts)}[/cyan]")
+                    console.print(f"[dim]Run: optchat sync <peer> or add 'peers': [...] to config.json[/dim]")
+                else:
+                    console.print(f"[red]Error: No peer specified and no peers configured in {chat_dir}/config.json.[/red]")
+                return
+
         client = EngineClient(socket_path=chat_dir / "engine.sock")
         use_daemon = client.is_daemon_alive()
 
-        console.print(f"[cyan]Syncing memory idempotently with peer '{args.peer}' over SSH...[/cyan]")
-        try:
-            if use_daemon:
-                local_payload = client.sync_export()
-                remote_response = sync_payload_over_ssh(args.peer, local_payload, remote_dir=args.remote_dir)
-                res = client.sync_apply(remote_response)
-            else:
-                storage = Storage(chat_dir)
-                storage.open()
-                try:
-                    local_payload = export_sync_payload(storage)
-                    remote_response = sync_payload_over_ssh(args.peer, local_payload, remote_dir=args.remote_dir)
-                    res = apply_sync_payload(storage, remote_response)
-                finally:
-                    storage.close()
+        for peer in peers_to_sync:
+            console.print(f"[cyan]Syncing memory idempotently with peer '{peer}' over SSH...[/cyan]")
+            try:
+                if use_daemon:
+                    local_payload = client.sync_export()
+                    remote_response = sync_payload_over_ssh(peer, local_payload, remote_dir=args.remote_dir)
+                    res = client.sync_apply(remote_response)
+                else:
+                    storage = Storage(chat_dir)
+                    storage.open()
+                    try:
+                        local_payload = export_sync_payload(storage)
+                        remote_response = sync_payload_over_ssh(peer, local_payload, remote_dir=args.remote_dir)
+                        res = apply_sync_payload(storage, remote_response)
+                    finally:
+                        storage.close()
 
-            console.print(f"[green]Sync complete! Total messages: {res.get('messages_count', 0)} (+{res.get('imported_messages', 0)} new, +{res.get('imported_nodes', 0)} tree nodes).[/green]")
-        except Exception as e:
-            console.print(f"[red]Sync failed: {e}[/red]")
+                console.print(f"[green]Sync with '{peer}' complete! Total messages: {res.get('messages_count', 0)} (+{res.get('imported_messages', 0)} new, +{res.get('imported_nodes', 0)} tree nodes).[/green]")
+            except Exception as e:
+                console.print(f"[red]Sync with '{peer}' failed: {e}[/red]")
 
     elif args.subcommand == "sync-exchange":
         from optchat.engine_client import EngineClient

@@ -80,6 +80,7 @@ def reconcile_tree_nodes(
     storage: Storage,
     remote_nodes: List[TreeNode],
     unified_msgs: List[Message],
+    max_valid_idx: Optional[int] = None,
 ) -> int:
     """Import valid pre-computed tree summaries from remote to save CPU & LLM tokens."""
     imported = 0
@@ -93,9 +94,11 @@ def reconcile_tree_nodes(
 
         # Node must fall within our current message bounds
         if end_idx <= msg_count:
+            if max_valid_idx is not None and end_idx > max_valid_idx:
+                continue
             if coord not in storage.tree or not storage.tree[coord].text:
                 storage.tree[coord] = r_node
-                storage.append_tree_node(r_node.l, r_node.i, r_node.text)
+                storage.save_node(r_node.l, r_node.i, r_node.text)
                 imported += 1
 
     return imported
@@ -132,6 +135,7 @@ def apply_sync_payload(storage: Storage, payload: Dict[str, Any]) -> Dict[str, A
         }
 
     imported_msgs_count = 0
+    max_valid_idx: Optional[int] = None
 
     if has_changes:
         # Check if local is a prefix and remote only added items
@@ -149,12 +153,20 @@ def apply_sync_payload(storage: Storage, payload: Dict[str, Any]) -> Dict[str, A
             storage.append_messages_batch(batch)
             imported_msgs_count = len(new_items)
         else:
-            # Concurrent fork resolution: rewrite log files with deterministic order
+            # Concurrent fork resolution: find divergence index
+            first_diff_idx = 0
+            while first_diff_idx < len(storage.messages) and first_diff_idx < len(unified_msgs):
+                if storage.messages[first_diff_idx].key != unified_msgs[first_diff_idx].key:
+                    break
+                first_diff_idx += 1
+            max_valid_idx = first_diff_idx
             imported_msgs_count = len(unified_msgs) - len(storage.messages)
-            _rewrite_storage_messages(storage, unified_msgs)
+            _rewrite_storage_messages(storage, unified_msgs, first_diff_idx=first_diff_idx)
 
     # Reconcile tree summaries
-    imported_nodes_count = reconcile_tree_nodes(storage, remote_nodes, unified_msgs)
+    imported_nodes_count = reconcile_tree_nodes(
+        storage, remote_nodes, unified_msgs, max_valid_idx=max_valid_idx
+    )
 
     return {
         "status": "ok",
@@ -164,7 +176,9 @@ def apply_sync_payload(storage: Storage, payload: Dict[str, Any]) -> Dict[str, A
     }
 
 
-def _rewrite_storage_messages(storage: Storage, unified_msgs: List[Message]) -> None:
+def _rewrite_storage_messages(
+    storage: Storage, unified_msgs: List[Message], first_diff_idx: int = 0
+) -> None:
     """Atomic rewrite of storage messages on concurrent fork reconciliation."""
     storage.messages = []
     # Clear existing main/*.jsonl
@@ -177,6 +191,67 @@ def _rewrite_storage_messages(storage: Storage, unified_msgs: List[Message]) -> 
     # Re-append all unified messages
     batch = [(m.kind, m.text, m.date) for m in unified_msgs]
     storage.append_messages_batch(batch)
+
+    # Invalidate tree nodes that spanned beyond first_diff_idx
+    invalid_coords = []
+    for coord in list(storage.tree.keys()):
+        l, i = coord
+        span = 1 << l
+        end_idx = (i + 1) * span
+        if end_idx > first_diff_idx:
+            invalid_coords.append(coord)
+            del storage.tree[coord]
+
+    if invalid_coords:
+        for f in storage.tree_dir.glob("*.jsonl"):
+            try:
+                f.unlink()
+            except Exception:
+                pass
+        valid_nodes = list(storage.tree.values())
+        storage.tree.clear()
+        for node in valid_nodes:
+            storage.save_node(node.l, node.i, node.text)
+
+
+def get_configured_peers(chat_dir: Optional[Path] = None) -> List[str]:
+    """Retrieve peer list from ~/.optchat/config.json."""
+    if chat_dir is None:
+        chat_dir = Path(os.path.expanduser("~/.optchat"))
+    cfg_path = chat_dir / "config.json"
+    if cfg_path.is_file():
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                peers = data.get("peers")
+                if isinstance(peers, list):
+                    return [str(p).strip() for p in peers if str(p).strip()]
+        except Exception:
+            pass
+    return []
+
+
+def get_ssh_config_hosts(ssh_config_path: Optional[Path] = None) -> List[str]:
+    """Detect non-wildcard host aliases defined in ~/.ssh/config."""
+    if ssh_config_path is None:
+        ssh_config_path = Path(os.path.expanduser("~/.ssh/config"))
+    if not ssh_config_path.is_file():
+        return []
+    hosts: List[str] = []
+    try:
+        with open(ssh_config_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if line.lower().startswith("host "):
+                    parts = line.split()[1:]
+                    for p in parts:
+                        p = p.strip()
+                        if p and not any(ch in p for ch in "*?%"):
+                            if p not in hosts:
+                                hosts.append(p)
+    except Exception:
+        pass
+    return hosts
 
 
 def sync_payload_over_ssh(

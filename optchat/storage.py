@@ -376,6 +376,10 @@ class Storage:
         self.tree[(l, i)] = node
         return node
 
+    def append_tree_node(self, l: int, i: int, text: str) -> TreeNode:
+        """Alias for save_node for tree reconciliation and streaming."""
+        return self.save_node(l, i, text)
+
     def get_message(self, i: int) -> Optional[Message]:
         if 0 <= i < len(self.messages):
             return self.messages[i]
