@@ -475,6 +475,9 @@ def main() -> None:
                     finally:
                         storage.close()
 
+                if res.get("status") == "error":
+                    raise RuntimeError(res.get("error", "Unknown error applying sync"))
+
                 console.print(f"[green]Sync with '{peer}' complete! Total messages: {res.get('messages_count', 0)} (+{res.get('imported_messages', 0)} new, +{res.get('imported_nodes', 0)} tree nodes).[/green]")
             except Exception as e:
                 console.print(f"[red]Sync with '{peer}' failed: {e}[/red]")
