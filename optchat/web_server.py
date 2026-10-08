@@ -1137,7 +1137,7 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function renderBubbleContent(kind, text) {
-      const isMultiLine = text.includes('\n') || text.length > 100;
+      const isMultiLine = text.indexOf('\\n') !== -1 || text.length > 100;
       const isCollapsible = kind === 'work' || isMultiLine;
       if (!isCollapsible) {
         return formatMarkdown(text);
