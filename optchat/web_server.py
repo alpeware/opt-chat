@@ -734,22 +734,28 @@ HTML_PAGE = """<!DOCTYPE html>
         document.getElementById('chat-stream').insertBefore(echoEl, target);
         scrollToBottom();
       } else if (event.type === 'subagent_spawn') {
-        const card = document.createElement('div');
-        card.className = 'subagent-card';
-        card.id = 'active-subagent-card';
+        let card = document.getElementById('active-subagent-card');
         const role = (event.extra && event.extra.role) || 'Subagent';
         const typeName = (event.extra && event.extra.typeName) || 'research';
         const prompt = (event.extra && event.extra.prompt) || event.content;
-        card.innerHTML = `
-          <div class="subagent-header">
-            <span>🚀 Subagent: <b>${role}</b></span>
-            <span class="subagent-badge">${typeName}</span>
-          </div>
-          <div class="subagent-prompt">${formatMarkdown(prompt)}</div>
-          <div class="subagent-tools" id="subagent-tools-container"></div>
-        `;
-        const target = currentAssistantBubble ? currentAssistantBubble.parentElement : document.getElementById('chat-stream');
-        document.getElementById('chat-stream').insertBefore(card, target);
+        if (!card) {
+          card = document.createElement('div');
+          card.className = 'subagent-card';
+          card.id = 'active-subagent-card';
+          card.innerHTML = `
+            <div class="subagent-header">
+              <span>🚀 Subagent: <b>${role}</b></span>
+              <span class="subagent-badge">${typeName}</span>
+            </div>
+            <div class="subagent-prompt">${formatMarkdown(prompt)}</div>
+            <div class="subagent-tools" id="subagent-tools-container"></div>
+          `;
+          const target = currentAssistantBubble ? currentAssistantBubble.parentElement : document.getElementById('chat-stream');
+          document.getElementById('chat-stream').insertBefore(card, target);
+        } else {
+          const badge = card.querySelector('.subagent-badge');
+          if (badge) badge.textContent = typeName;
+        }
         scrollToBottom();
       } else if (event.type === 'subagent_tool') {
         let toolsContainer = document.getElementById('subagent-tools-container');
@@ -1258,6 +1264,7 @@ class OptChatWebServer:
         self.app = web.Application()
 
         self._active_stream_queues: Set[asyncio.Queue[Dict[str, Any]]] = set()
+        self._daemon_event_task: Optional[asyncio.Task] = None
 
     async def init_engine(self) -> None:
         client = EngineClient(socket_path=self.chat_dir / "engine.sock")
@@ -1268,7 +1275,7 @@ class OptChatWebServer:
             self.storage = ProxyStorage(client, self.chat_dir)
             self.view = ProxyView(client)
             self.compactor = ProxyCompactor(client)
-            asyncio.create_task(self._listen_to_daemon_events())
+            self._daemon_event_task = asyncio.create_task(self._listen_to_daemon_events())
         else:
             logger.info("OptChat Daemon not running. Using embedded Storage & Compactor.")
             self.engine_client = None
@@ -1392,7 +1399,15 @@ class OptChatWebServer:
         return response
 
     async def handle_index(self, request: web.Request) -> web.Response:
-        return web.Response(text=HTML_PAGE, content_type="text/html")
+        return web.Response(
+            text=HTML_PAGE,
+            content_type="text/html",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     async def handle_browse(self, request: web.Request) -> web.Response:
         browse_file = self.chat_dir / "browse.html"
@@ -1696,6 +1711,8 @@ class OptChatWebServer:
         return web.json_response({"output": out})
 
     def shutdown(self) -> None:
+        if self._daemon_event_task and not self._daemon_event_task.done():
+            self._daemon_event_task.cancel()
         if not self.is_daemon_connected:
             if self.compactor:
                 self.compactor.stop()

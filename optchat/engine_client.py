@@ -92,6 +92,8 @@ class EngineClient:
             return json.loads(raw)
         finally:
             writer.close()
+            await writer.wait_closed()
+
     async def subscribe_events(self) -> AsyncIterator[Dict[str, Any]]:
         """Asynchronously stream events from the daemon event bus."""
         if not self.socket_path.exists():

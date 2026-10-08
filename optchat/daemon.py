@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import signal
 import sys
 from typing import Any, Dict, List, Optional, Set
@@ -410,30 +411,69 @@ class OptChatDaemon:
             error = payload.get("error")
             result = payload.get("result")
 
-            # 1. If running inside an internal subagent (parentConversationId is present)
-            if parent_id:
-                sub_role = agent_name or self._active_subagents.get(conv_id, {}).get("role", "Subagent")
+            # 1. If parent agent tool call was invoke_subagent, register spawned conversation IDs
+            if name == "invoke_subagent":
+                subagents = args.get("Subagents", [])
+                if isinstance(subagents, str):
+                    try:
+                        subagents = json.loads(subagents)
+                    except Exception:
+                        subagents = []
+                spawned_ids = re.findall(r'"conversationId":\s*"([^"]+)"', str(result or ""))
+                if spawned_ids:
+                    for idx, cid in enumerate(spawned_ids):
+                        sub = subagents[idx] if idx < len(subagents) else {}
+                        role = sub.get("Role", "Subagent")
+                        tname = sub.get("TypeName", "subagent")
+                        prompt = sub.get("Prompt", "")
+                        self._active_subagents[cid] = {"role": role, "typeName": tname, "prompt": prompt}
+                        self.broadcast(
+                            "subagent_spawn",
+                            f"Spawned subagent: {role} ({tname}) — {prompt[:120]}",
+                            extra={"role": role, "typeName": tname, "prompt": prompt, "conversationId": cid},
+                        )
+                else:
+                    for sub in subagents:
+                        role = sub.get("Role", "Subagent")
+                        tname = sub.get("TypeName", "subagent")
+                        prompt = sub.get("Prompt", "")
+                        self.broadcast(
+                            "subagent_spawn",
+                            f"Spawned subagent: {role} ({tname}) — {prompt[:120]}",
+                            extra={"role": role, "typeName": tname, "prompt": prompt},
+                        )
+                return {"status": "ok"}
 
-                # Subagent reporting back via send_message
-                if name == "send_message":
-                    msg_content = args.get("Message", "")
-                    if msg_content:
-                        clean_msg = clean_message_text(msg_content)
-                        # Broadcast subagent report to UI
+            # 2. Subagent reporting back via send_message
+            if name == "send_message":
+                sub_info = self._active_subagents.get(conv_id, {})
+                sub_role = sub_info.get("role") or agent_name or "Subagent"
+                msg_content = args.get("Message", "")
+                if msg_content:
+                    clean_msg = clean_message_text(msg_content)
+                    already_logged = False
+                    if self.storage and self.storage.messages:
+                        for m in self.storage.messages[-5:]:
+                            if m.kind == "work" and (clean_msg[:60] in m.text or m.text[:60] in clean_msg):
+                                already_logged = True
+                                break
+                    if not already_logged:
                         self.broadcast(
                             "subagent_report",
                             f"[{sub_role}] {clean_msg}",
                             extra={"role": sub_role, "report": clean_msg, "conversationId": conv_id},
                         )
-                        # Record into OptChat storage as 'work'
                         if self.storage and self.view:
                             work_msg = self.storage.append_message("work", f"[{sub_role}] {clean_msg}")
                             self.view.on_new_message(work_msg.i)
                             if self.compactor:
                                 self.compactor.pump()
-                        return {"status": "ok"}
+                return {"status": "ok"}
 
-                # Intermediate tool execution by the subagent
+            # 3. Intermediate tool execution inside a subagent
+            if parent_id or (conv_id in self._active_subagents):
+                sub_info = self._active_subagents.get(conv_id, {})
+                sub_role = sub_info.get("role") or agent_name or "Subagent"
                 args_str = json.dumps(args)
                 if len(args_str) > 140:
                     args_str = args_str[:140] + "..."
@@ -454,33 +494,15 @@ class OptChatDaemon:
                 )
                 return {"status": "ok"}
 
-            # 2. If parent agent tool call was invoke_subagent
-            if name == "invoke_subagent":
-                subagents = args.get("Subagents", [])
-                if isinstance(subagents, str):
-                    try:
-                        subagents = json.loads(subagents)
-                    except Exception:
-                        subagents = []
-                for sub in subagents:
-                    role = sub.get("Role", "Subagent")
-                    tname = sub.get("TypeName", "subagent")
-                    prompt = sub.get("Prompt", "")
-                    self.broadcast(
-                        "subagent_spawn",
-                        f"Spawned subagent: {role} ({tname}) — {prompt[:120]}",
-                        extra={"role": role, "typeName": tname, "prompt": prompt},
-                    )
-                return {"status": "ok"}
-
             return {"status": "ok"}
 
         elif event == "post_invocation":
             return {"status": "ok"}
 
         elif event == "stop":
-            if parent_id:
-                sub_role = agent_name or self._active_subagents.get(conv_id, {}).get("role", "Subagent")
+            if parent_id or (conv_id in self._active_subagents):
+                sub_info = self._active_subagents.pop(conv_id, {})
+                sub_role = sub_info.get("role") or agent_name or "Subagent"
                 self.broadcast(
                     "subagent_complete",
                     f"Subagent [{sub_role}] completed.",
