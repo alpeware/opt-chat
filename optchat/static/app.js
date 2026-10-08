@@ -50,6 +50,145 @@ if (window.visualViewport) {
 window.addEventListener('resize', setAppHeight);
 window.addEventListener('orientationchange', () => setTimeout(setAppHeight, 200));
 
+// Subagent Workspace & Tab Bar State
+let currentTab = 'main';
+const subagentThreads = new Map(); // id -> { id, role, typeName, prompt, status: 'running'|'completed', tools: [], report: null, startTime, endTime }
+
+function renderAgentTabs() {
+  const container = document.getElementById('tabs-container');
+  if (!container) return;
+
+  let html = `
+    <button class="agent-tab ${currentTab === 'main' ? 'active' : ''}" id="tab-btn-main" onclick="switchAgentTab('main')">
+      <span class="tab-icon">💬</span>
+      <span class="tab-label">Main Chat</span>
+    </button>
+  `;
+
+  for (const [id, thread] of subagentThreads.entries()) {
+    const isActive = (currentTab === id);
+    const isRunning = (thread.status === 'running');
+    const roleShort = thread.role.length > 20 ? thread.role.slice(0, 18) + '…' : thread.role;
+
+    html += `
+      <button class="agent-tab ${isActive ? 'active' : ''}" id="tab-btn-${escapeHtml(id)}" onclick="switchAgentTab('${escapeHtml(id)}')">
+        <span class="${isRunning ? 'tab-dot-running' : 'tab-dot-done'}">${isRunning ? '' : '✓'}</span>
+        <span class="tab-label">${escapeHtml(roleShort)}</span>
+        <span class="tab-badge">${escapeHtml(thread.typeName || 'sub')}</span>
+      </button>
+    `;
+  }
+
+  container.innerHTML = html;
+}
+
+function switchAgentTab(tabId) {
+  currentTab = tabId;
+  renderAgentTabs();
+
+  const chatStream = document.getElementById('chat-stream');
+  const subagentStream = document.getElementById('subagent-stream');
+
+  if (tabId === 'main') {
+    if (subagentStream) subagentStream.style.display = 'none';
+    if (chatStream) {
+      chatStream.style.display = 'flex';
+      scrollToBottom();
+    }
+  } else {
+    if (chatStream) chatStream.style.display = 'none';
+    if (subagentStream) {
+      subagentStream.style.display = 'flex';
+      renderSubagentView(tabId);
+    }
+  }
+}
+
+function renderSubagentView(tabId) {
+  const subagentStream = document.getElementById('subagent-stream');
+  if (!subagentStream) return;
+
+  const thread = subagentThreads.get(tabId);
+  if (!thread) {
+    subagentStream.innerHTML = `
+      <div style="padding: 20px; text-align: center; color: var(--text-dim);">
+        <p>Subagent workspace not found.</p>
+        <button class="subagent-back-btn" onclick="switchAgentTab('main')" style="margin-top: 10px;">← Back to Main Chat</button>
+      </div>
+    `;
+    return;
+  }
+
+  const isRunning = (thread.status === 'running');
+
+  let toolsHtml = '';
+  if (thread.tools && thread.tools.length > 0) {
+    toolsHtml = thread.tools.map((t, idx) => {
+      const toolName = t.tool || 'tool';
+      const argsStr = typeof t.args === 'object' ? JSON.stringify(t.args, null, 2) : String(t.args || '');
+      const preview = argsStr.length > 80 ? argsStr.slice(0, 80) + '...' : argsStr;
+      return `
+        <details class="tool-box" ${idx === thread.tools.length - 1 && isRunning ? 'open' : ''}>
+          <summary>⚡ #${idx + 1} <b>${escapeHtml(toolName)}</b> <span style="opacity: 0.7; font-weight: normal; margin-left: 6px;">${escapeHtml(preview.replace(/\\n/g, ' '))}</span></summary>
+          <pre style="margin-top: 6px;">${escapeHtml(argsStr)}</pre>
+        </details>
+      `;
+    }).join('');
+  } else {
+    toolsHtml = `<p style="font-size: 0.82rem; color: var(--text-dim); font-style: italic; padding: 4px;">No intermediate tool calls recorded yet.</p>`;
+  }
+
+  let reportHtml = '';
+  if (thread.report) {
+    reportHtml = `
+      <div class="subagent-report-container">
+        <div class="subagent-section-label" style="color: #38bdf8;">📋 Deliverable / Final Report</div>
+        <div class="subagent-report-content" style="margin-top: 8px;">
+          ${formatMarkdown(thread.report)}
+        </div>
+      </div>
+    `;
+  } else if (isRunning) {
+    reportHtml = `
+      <div style="padding: 12px; background: rgba(16, 185, 129, 0.08); border: 1px dashed rgba(16, 185, 129, 0.3); border-radius: 10px; display: flex; align-items: center; gap: 8px;">
+        <span class="tab-dot-running"></span>
+        <span style="font-size: 0.84rem; color: #34d399;">Subagent is running in background...</span>
+      </div>
+    `;
+  }
+
+  subagentStream.innerHTML = `
+    <div class="subagent-view-header">
+      <div class="subagent-view-title">
+        <span>🚀 ${escapeHtml(thread.role)}</span>
+        <span class="subagent-badge" style="background: rgba(168, 85, 247, 0.25); color: #c084fc;">${escapeHtml(thread.typeName || 'subagent')}</span>
+        <span class="subagent-status-pill ${isRunning ? 'running' : 'completed'}">
+          ${isRunning ? '<span class="tab-dot-running"></span> In Progress' : '✓ Completed'}
+        </span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <button class="subagent-back-btn" onclick="switchAgentTab('main')">← Back to Main Chat</button>
+      </div>
+    </div>
+
+    ${thread.prompt ? `
+      <div class="subagent-mission-box">
+        <div class="subagent-section-label">🎯 Assigned Mission & Goal</div>
+        <div class="subagent-mission-content">${formatMarkdown(thread.prompt)}</div>
+      </div>
+    ` : ''}
+
+    <div class="subagent-events-container">
+      <div class="subagent-section-label">⚡ Execution Activity & Tool Calls (${thread.tools ? thread.tools.length : 0})</div>
+      ${toolsHtml}
+    </div>
+
+    ${reportHtml}
+  `;
+
+  hydratePendingMath();
+}
+
 // Persistent SSE Event Stream
 function connectEventStream() {
   const evtSource = new EventSource('/api/stream');
@@ -123,10 +262,41 @@ function handleStreamEvent(event) {
     document.getElementById('chat-stream').insertBefore(echoEl, target);
     scrollToBottom();
   } else if (event.type === 'subagent_spawn') {
-    let card = document.getElementById('active-subagent-card');
     const role = (event.extra && event.extra.role) || 'Subagent';
     const typeName = (event.extra && event.extra.typeName) || 'research';
     const prompt = (event.extra && event.extra.prompt) || event.content;
+    const cid = (event.extra && event.extra.conversationId) || ('sub-' + Date.now());
+
+    let thread = subagentThreads.get(cid);
+    if (!thread) {
+      for (const [k, v] of subagentThreads.entries()) {
+        if (v.role === role && v.status === 'running') {
+          thread = v;
+          break;
+        }
+      }
+    }
+    if (!thread) {
+      thread = {
+        id: cid,
+        role: role,
+        typeName: typeName,
+        prompt: prompt,
+        status: 'running',
+        tools: [],
+        report: null,
+        startTime: new Date().toISOString(),
+        endTime: null
+      };
+      subagentThreads.set(cid, thread);
+    } else {
+      thread.role = role;
+      thread.typeName = typeName;
+      if (prompt) thread.prompt = prompt;
+    }
+    renderAgentTabs();
+
+    let card = document.getElementById('active-subagent-card');
     if (!card) {
       card = document.createElement('div');
       card.className = 'subagent-card';
@@ -137,6 +307,7 @@ function handleStreamEvent(event) {
           <span class="subagent-badge">${escapeHtml(typeName)}</span>
         </div>
         <div class="subagent-prompt">${formatMarkdown(prompt)}</div>
+        <button class="btn-open-tab" onclick="switchAgentTab('${escapeHtml(thread.id)}')">🔍 Open Subagent Workspace Tab →</button>
         <div class="subagent-tools" id="subagent-tools-container"></div>
       `;
       const target = currentAssistantBubble ? currentAssistantBubble.parentElement : document.getElementById('chat-stream');
@@ -145,8 +316,36 @@ function handleStreamEvent(event) {
       const badge = card.querySelector('.subagent-badge');
       if (badge) badge.textContent = typeName;
     }
+    if (currentTab === thread.id) {
+      renderSubagentView(thread.id);
+    }
     scrollToBottom();
   } else if (event.type === 'subagent_tool') {
+    const cid = (event.extra && event.extra.conversationId);
+    const role = (event.extra && event.extra.role);
+    let thread = cid ? subagentThreads.get(cid) : null;
+    if (!thread && role) {
+      for (const [k, v] of subagentThreads.entries()) {
+        if (v.role === role) { thread = v; break; }
+      }
+    }
+    if (!thread) {
+      for (const [k, v] of subagentThreads.entries()) {
+        if (v.status === 'running') { thread = v; break; }
+      }
+    }
+    const toolName = (event.extra && event.extra.tool) || 'tool';
+    const toolArgs = (event.extra && event.extra.args) || {};
+    if (thread) {
+      thread.tools.push({
+        tool: toolName,
+        args: toolArgs,
+        time: new Date().toISOString()
+      });
+      if (currentTab === thread.id) {
+        renderSubagentView(thread.id);
+      }
+    }
     let toolsContainer = document.getElementById('subagent-tools-container');
     if (!toolsContainer) {
       const toolEl = document.createElement('details');
@@ -158,13 +357,28 @@ function handleStreamEvent(event) {
     } else {
       const toolItem = document.createElement('details');
       toolItem.className = 'subagent-tool-item';
-      const toolName = (event.extra && event.extra.tool) || 'tool';
-      const argsPreview = JSON.stringify((event.extra && event.extra.args) || {});
+      const argsPreview = JSON.stringify(toolArgs);
       toolItem.innerHTML = `<summary>⚡ ${escapeHtml(toolName)}: ${escapeHtml(argsPreview.slice(0, 90))}${argsPreview.length > 90 ? '...' : ''}</summary><pre>${escapeHtml(JSON.stringify(event.extra || {}, null, 2))}</pre>`;
       toolsContainer.appendChild(toolItem);
     }
     scrollToBottom();
   } else if (event.type === 'subagent_complete') {
+    const cid = (event.extra && event.extra.conversationId);
+    const role = (event.extra && event.extra.role);
+    let thread = cid ? subagentThreads.get(cid) : null;
+    if (!thread && role) {
+      for (const [k, v] of subagentThreads.entries()) {
+        if (v.role === role) { thread = v; break; }
+      }
+    }
+    if (thread) {
+      thread.status = 'completed';
+      thread.endTime = new Date().toISOString();
+      renderAgentTabs();
+      if (currentTab === thread.id) {
+        renderSubagentView(thread.id);
+      }
+    }
     const card = document.getElementById('active-subagent-card');
     if (card) {
       card.removeAttribute('id');
@@ -179,7 +393,37 @@ function handleStreamEvent(event) {
   } else if (event.type === 'subagent_report') {
     const repText = (event.extra && event.extra.report) || event.content;
     const role = (event.extra && event.extra.role) || 'Subagent';
-    appendMessage('work', `### 📋 Subagent Report: ${role}\n\n${repText}`, new Date().toISOString(), false);
+    const cid = (event.extra && event.extra.conversationId);
+    let thread = cid ? subagentThreads.get(cid) : null;
+    if (!thread && role) {
+      for (const [k, v] of subagentThreads.entries()) {
+        if (v.role === role) { thread = v; break; }
+      }
+    }
+    if (!thread) {
+      const genId = cid || ('sub-' + Date.now());
+      thread = {
+        id: genId,
+        role: role,
+        typeName: 'subagent',
+        prompt: '',
+        status: 'completed',
+        tools: [],
+        report: repText,
+        startTime: new Date().toISOString(),
+        endTime: new Date().toISOString()
+      };
+      subagentThreads.set(genId, thread);
+    } else {
+      thread.report = repText;
+      thread.status = 'completed';
+      thread.endTime = new Date().toISOString();
+    }
+    renderAgentTabs();
+    if (currentTab === thread.id) {
+      renderSubagentView(thread.id);
+    }
+    appendMessage('work', `### 📋 Subagent Report: ${role}\n\n${repText}`, new Date().toISOString(), false, thread.id);
     scrollToBottom();
     fetchState();
   } else if (event.type === 'error') {
@@ -281,7 +525,40 @@ async function fetchHistory() {
         }
       } catch (_) {}
 
-      msgs.forEach(m => appendMessage(m.kind, m.text, m.date, false));
+      msgs.forEach((m, idx) => {
+        let threadId = null;
+        if (m.kind === 'work' && (m.text.includes('Subagent Report:') || m.text.startsWith('['))) {
+          let role = 'Subagent';
+          let reportText = m.text;
+          const match = m.text.match(/Subagent Report:?\s*([^\n\r]+)/i);
+          if (match) {
+            role = match[1].trim();
+            reportText = m.text.replace(/### 📋 Subagent Report:\s*[^\n]+\n*/i, '').trim();
+          } else {
+            const match2 = m.text.match(/^\[([^\]]+)\]\s*(.*)/s);
+            if (match2) {
+              role = match2[1].trim();
+              reportText = match2[2].trim();
+            }
+          }
+          threadId = 'hist-sub-' + idx;
+          if (!subagentThreads.has(threadId)) {
+            subagentThreads.set(threadId, {
+              id: threadId,
+              role: role,
+              typeName: 'subagent',
+              prompt: '',
+              status: 'completed',
+              tools: [],
+              report: reportText,
+              startTime: m.date || new Date().toISOString(),
+              endTime: m.date || new Date().toISOString()
+            });
+          }
+        }
+        appendMessage(m.kind, m.text, m.date, false, threadId);
+      });
+      renderAgentTabs();
       scrollToBottom();
     }
   } catch (e) {
@@ -542,7 +819,7 @@ function getMessagePreview(text, kind) {
   return clean;
 }
 
-function renderBubbleContent(kind, text) {
+function renderBubbleContent(kind, text, threadId = null) {
   const isMultiLine = text.includes('\n') || text.length > 100;
   const isCollapsible = kind === 'work' || isMultiLine;
   if (!isCollapsible) {
@@ -550,7 +827,10 @@ function renderBubbleContent(kind, text) {
   }
   const isOpen = kind !== 'work';
   const preview = escapeHtml(getMessagePreview(text, kind));
-  const fullHtml = formatMarkdown(text);
+  let fullHtml = formatMarkdown(text);
+  if (kind === 'work' && threadId) {
+    fullHtml += `<div style="margin-top: 10px;"><button class="btn-open-tab" onclick="switchAgentTab('${escapeHtml(threadId)}')">🔍 Switch to Subagent Workspace Tab →</button></div>`;
+  }
 
   return `
     <details class="msg-details" ${isOpen ? 'open' : ''}>
@@ -564,7 +844,7 @@ function renderBubbleContent(kind, text) {
   `;
 }
 
-function appendMessage(kind, text, dateStr, isStreaming = false) {
+function appendMessage(kind, text, dateStr, isStreaming = false, threadId = null) {
   const stream = document.getElementById('chat-stream');
   if (!stream) return null;
 
@@ -592,7 +872,7 @@ function appendMessage(kind, text, dateStr, isStreaming = false) {
   if (isStreaming) {
     bubble.innerHTML = formatMarkdown(text) + '<span class="cursor-stream"></span>';
   } else {
-    bubble.innerHTML = renderBubbleContent(kind, text);
+    bubble.innerHTML = renderBubbleContent(kind, text, threadId);
   }
 
   row.appendChild(header);

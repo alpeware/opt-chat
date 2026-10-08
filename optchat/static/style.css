@@ -945,3 +945,210 @@ footer {
   width: 100%;
 }
 
+/* Subagent Workspace Tab Bar */
+.agent-tabs-nav {
+  display: flex;
+  align-items: center;
+  background: #0b101d;
+  border-bottom: 1px solid var(--card-border);
+  padding: 6px 12px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.agent-tabs-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.tabs-scroll-container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 100%;
+}
+
+.agent-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.agent-tab:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+.agent-tab.active {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.15);
+}
+
+.agent-tab .tab-icon {
+  font-size: 0.85rem;
+}
+
+.tab-badge {
+  font-size: 0.65rem;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-dim);
+}
+.agent-tab.active .tab-badge {
+  background: rgba(56, 189, 248, 0.25);
+  color: var(--accent);
+}
+
+.tab-dot-running {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 6px #34d399;
+  animation: pulse-dot 1.5s infinite;
+}
+@keyframes pulse-dot {
+  0% { transform: scale(0.95); opacity: 0.6; }
+  50% { transform: scale(1.25); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.6; }
+}
+
+.tab-dot-done {
+  color: #34d399;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+/* Dedicated Subagent Workspace Stream */
+#subagent-stream {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  scroll-behavior: smooth;
+}
+
+.subagent-view-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  background: #111827;
+  border: 1px solid #1f2937;
+  border-left: 4px solid var(--purple);
+  border-radius: 12px;
+}
+.subagent-view-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+.subagent-status-pill {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.subagent-status-pill.running {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #34d399;
+}
+.subagent-status-pill.completed {
+  background: rgba(147, 197, 253, 0.15);
+  border: 1px solid rgba(147, 197, 253, 0.3);
+  color: #93c5fd;
+}
+
+.subagent-back-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--card-border);
+  color: var(--text);
+  font-size: 0.78rem;
+  padding: 5px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.subagent-back-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.subagent-mission-box {
+  background: #151226;
+  border: 1px solid #2e1d52;
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.subagent-section-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #c084fc;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+.subagent-mission-content {
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: #e2e8f0;
+}
+
+.subagent-events-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.subagent-report-container {
+  background: #141a2e;
+  border: 1px solid #253358;
+  border-radius: 12px;
+  padding: 14px 16px;
+  color: var(--text);
+}
+
+.btn-open-tab {
+  font-size: 0.72rem;
+  background: rgba(168, 85, 247, 0.18);
+  border: 1px solid rgba(168, 85, 247, 0.35);
+  color: #d8b4fe;
+  padding: 4px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s;
+}
+.btn-open-tab:hover {
+  background: rgba(168, 85, 247, 0.3);
+  color: #fff;
+}
+
+

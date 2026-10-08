@@ -30,6 +30,16 @@
       </div>
     </header>
 
+    <!-- Subagent Workspace Tab Bar -->
+    <nav id="agent-tabs" class="agent-tabs-nav">
+      <div class="tabs-scroll-container" id="tabs-container">
+        <button class="agent-tab active" id="tab-btn-main" onclick="switchAgentTab('main')">
+          <span class="tab-icon">💬</span>
+          <span class="tab-label">Main Chat</span>
+        </button>
+      </div>
+    </nav>
+
     <!-- Chat Messages -->
     <div id="chat-stream">
       <div class="message-row talk">
@@ -41,6 +51,9 @@
         </div>
       </div>
     </div>
+
+    <!-- Subagent Workspace Stream -->
+    <div id="subagent-stream" style="display: none;"></div>
 
     <!-- Input Footer -->
     <footer>
