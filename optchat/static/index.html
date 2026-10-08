@@ -24,6 +24,7 @@
         <span class="pill" id="pill-view" onclick="openStats()">View: -</span>
       </div>
       <div class="header-actions">
+        <button class="btn-icon" id="btn-fold-toggle" onclick="toggleFoldedView()">🗂️ <span class="hide-sm" id="btn-fold-label">Folded</span></button>
         <button class="btn-icon" onclick="openTreeDrawer()">📋 <span class="hide-sm">View</span></button>
         <button class="btn-icon" onclick="window.open('/browse', '_blank')">🌳 <span class="hide-sm">Browse</span></button>
       </div>
@@ -44,6 +45,7 @@
     <!-- Input Footer -->
     <footer>
       <div class="quick-bar">
+        <span class="quick-pill" id="pill-fold-all" onclick="toggleFoldedView()">🗂️ Fold all</span>
         <span class="quick-pill" onclick="quickSend('/view')">/view</span>
         <span class="quick-pill" onclick="quickSend('/stats')">/stats</span>
         <span class="quick-pill" onclick="window.open('/browse', '_blank')">/browse</span>

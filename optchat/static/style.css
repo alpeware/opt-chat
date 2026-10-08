@@ -807,3 +807,141 @@ footer {
     border-left: 1px solid var(--card-border);
   }
 }
+
+/* Inline Hierarchical Block Folding (nx) */
+.folded-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  border-radius: 12px;
+  margin-bottom: 8px;
+  font-size: 0.85rem;
+  color: var(--accent);
+}
+.folded-view-header .fold-hint {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.tree-folded-banner {
+  background: rgba(56, 189, 248, 0.06);
+  border: 1px dashed rgba(56, 189, 248, 0.25);
+  border-radius: 12px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #93c5fd;
+  transition: all 0.15s ease;
+  margin-bottom: 8px;
+}
+.tree-folded-banner:hover {
+  background: rgba(56, 189, 248, 0.12);
+  border-color: var(--accent);
+}
+.tree-folded-banner .banner-cta {
+  font-size: 0.72rem;
+  background: var(--accent);
+  color: #000;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.tree-block {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #111827;
+  border: 1px solid #1f2937;
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  width: 100%;
+}
+.tree-block:hover {
+  background: #1e293b;
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.block-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: rgba(56, 189, 248, 0.15);
+  color: var(--accent);
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.block-text {
+  font-size: 0.86rem;
+  color: #cbd5e1;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.block-unfold-btn {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 7px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.tree-block:hover .block-unfold-btn {
+  background: rgba(56, 189, 248, 0.2);
+  color: #fff;
+}
+
+.tree-box {
+  border-left: 2px solid var(--accent);
+  padding-left: 10px;
+  margin: 6px 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tree-box-header {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(56, 189, 248, 0.1);
+  width: fit-content;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  user-select: none;
+  transition: background 0.15s;
+}
+.tree-box-header:hover {
+  background: rgba(56, 189, 248, 0.2);
+  color: #fff;
+}
+
+.tree-box-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+

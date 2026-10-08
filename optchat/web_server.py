@@ -494,8 +494,8 @@ class OptChatWebServer:
             return web.json_response({"error": "Invalid id or n"}, status=400)
 
         if self.is_daemon_connected and self.engine_client:
-            out = await self.engine_client.zoom_async(id_, n)
-            return web.json_response({"output": out})
+            res = await self.engine_client.call_async("zoom", id=id_, n=n)
+            return web.json_response(res)
 
         assert self.storage is not None
         l, i = node_coords(id_, n)
@@ -504,9 +504,18 @@ class OptChatWebServer:
             msg = self.storage.get_message(i)
             if msg:
                 out = f"Verbatim Message {id_} ({msg.kind}):\n{msg.text}"
+                msg_dict = {"i": msg.i, "kind": msg.kind, "text": msg.text, "date": msg.date}
             else:
                 out = f"Message {id_} not found."
-            return web.json_response({"output": out})
+                msg_dict = None
+            return web.json_response({
+                "status": "ok",
+                "output": out,
+                "id": id_,
+                "n": 1,
+                "is_leaf": True,
+                "message": msg_dict,
+            })
 
         # Higher level zoom (§7.1)
         child_a = self.storage.get_node(l - 1, 2 * i)
@@ -521,7 +530,18 @@ class OptChatWebServer:
             f"{id_}+{half}|{a_text}\n"
             f"{id_ + half}+{half}|{b_text}"
         )
-        return web.json_response({"output": out})
+        children = [
+            {"id": id_, "n": half, "text": a_text},
+            {"id": id_ + half, "n": half, "text": b_text},
+        ]
+        return web.json_response({
+            "status": "ok",
+            "output": out,
+            "id": id_,
+            "n": n,
+            "is_leaf": False,
+            "children": children,
+        })
 
     def shutdown(self) -> None:
         if self._daemon_event_task and not self._daemon_event_task.done():

@@ -333,18 +333,33 @@ class OptChatDaemon:
                 msg = self.storage.get_message(i)
                 if msg:
                     out = f"Verbatim Message {id_} ({msg.kind}):\n{msg.text}"
+                    msg_dict = {"i": msg.i, "kind": msg.kind, "text": msg.text, "date": msg.date}
                 else:
                     out = f"Message {id_} not found."
-                return {"status": "ok", "output": out}
+                    msg_dict = None
+                return {"status": "ok", "output": out, "id": id_, "n": 1, "is_leaf": True, "message": msg_dict}
 
             node = self.storage.get_node(l, i)
             child_n = n // 2
             left_node = self.storage.get_node(l - 1, 2 * i)
             right_node = self.storage.get_node(l - 1, 2 * i + 1)
-            left_str = f"{id_}+{child_n}|{left_node.text}" if left_node else f"{id_}+{child_n}|(summarizing...)"
-            right_str = f"{id_ + child_n}+{child_n}|{right_node.text}" if right_node else f"{id_ + child_n}+{child_n}|(summarizing...)"
+            left_text = left_node.text if left_node else "(summarizing...)"
+            right_text = right_node.text if right_node else "(summarizing...)"
+            left_str = f"{id_}+{child_n}|{left_text}"
+            right_str = f"{id_ + child_n}+{child_n}|{right_text}"
             out = f"Zoomed {id_}+{n} (Level {l}):\n  {left_str}\n  {right_str}"
-            return {"status": "ok", "output": out}
+            children = [
+                {"id": id_, "n": child_n, "text": left_text},
+                {"id": id_ + child_n, "n": child_n, "text": right_text},
+            ]
+            return {
+                "status": "ok",
+                "output": out,
+                "id": id_,
+                "n": n,
+                "is_leaf": False,
+                "children": children,
+            }
 
         elif action == "date":
             id_ = int(req.get("id", 0))

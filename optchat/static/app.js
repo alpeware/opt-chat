@@ -247,7 +247,14 @@ async function openSessionModal() {
   }
 }
 
+let isFoldedView = false;
+const openBlocks = new Map();
+
 async function fetchHistory() {
+  if (isFoldedView) {
+    await renderFoldedView();
+    return;
+  }
   try {
     const res = await fetch('/api/history?limit=50');
     if (!res.ok) {
@@ -258,11 +265,198 @@ async function fetchHistory() {
     const stream = document.getElementById('chat-stream');
     if (Array.isArray(msgs) && msgs.length > 0) {
       stream.innerHTML = '';
+
+      // Check if earlier messages exist in tree
+      try {
+        const viewRes = await fetch('/api/view');
+        if (viewRes.ok) {
+          const viewData = await viewRes.json();
+          if (viewData.lines && viewData.lines.some(l => !l.startsWith('0+1|') && !l.includes('+1|'))) {
+            const banner = document.createElement('div');
+            banner.className = 'tree-folded-banner';
+            banner.innerHTML = `<span>🗂️ <b>Memory Tree:</b> Earlier chat is folded in summary blocks.</span><span class="banner-cta">Fold all ▾</span>`;
+            banner.onclick = () => toggleFoldedView();
+            stream.appendChild(banner);
+          }
+        }
+      } catch (_) {}
+
       msgs.forEach(m => appendMessage(m.kind, m.text, m.date, false));
       scrollToBottom();
     }
   } catch (e) {
     console.error('Error fetching history:', e);
+  }
+}
+
+async function toggleFoldedView() {
+  isFoldedView = !isFoldedView;
+  const foldLabel = document.getElementById('btn-fold-label');
+  const foldPill = document.getElementById('pill-fold-all');
+  if (foldLabel) foldLabel.textContent = isFoldedView ? 'Stream' : 'Folded';
+  if (foldPill) foldPill.textContent = isFoldedView ? '💬 Stream' : '🗂️ Fold all';
+
+  if (isFoldedView) {
+    await renderFoldedView();
+  } else {
+    await fetchHistory();
+  }
+}
+
+async function renderFoldedView() {
+  const stream = document.getElementById('chat-stream');
+  if (!stream) return;
+  stream.innerHTML = `
+    <div class="folded-view-header">
+      <span>🗂️ <b>Memory Tree (Folded View)</b></span>
+      <span class="fold-hint">Click any block to unfold sub-summaries</span>
+    </div>
+    <div id="tree-blocks-container" style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
+      <p style="color: var(--text-dim); text-align: center; padding: 20px;">Loading tree blocks...</p>
+    </div>
+  `;
+
+  try {
+    const res = await fetch('/api/view');
+    if (!res.ok) throw new Error('Failed to load view');
+    const data = await res.json();
+    const container = document.getElementById('tree-blocks-container');
+    container.innerHTML = '';
+    const lines = data.lines || [];
+    if (!lines.length) {
+      container.innerHTML = '<p style="color: var(--text-dim); text-align: center;">Tree is empty.</p>';
+      return;
+    }
+    for (const line of lines) {
+      const pipeIdx = line.indexOf('|');
+      if (pipeIdx === -1) continue;
+      const coord = line.slice(0, pipeIdx);
+      const text = line.slice(pipeIdx + 1);
+      const parts = coord.split('+');
+      const id = parseInt(parts[0], 10);
+      const n = parseInt(parts[1], 10);
+      container.appendChild(createBlockElement(id, n, text));
+    }
+  } catch (e) {
+    const container = document.getElementById('tree-blocks-container');
+    if (container) {
+      container.innerHTML = `<p style="color: #ef4444; text-align: center;">Error loading tree: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+}
+
+function createBlockElement(id, n, text) {
+  const key = `${id}+${n}`;
+  if (openBlocks.has(key)) {
+    return createOpenBoxElement(id, n, text, openBlocks.get(key));
+  }
+
+  const block = document.createElement('div');
+  block.className = 'tree-block';
+  block.id = `block-${id}-${n}`;
+  block.onclick = (e) => {
+    e.stopPropagation();
+    unfoldBlock(id, n, text);
+  };
+  block.innerHTML = `
+    <span class="block-badge">${n}x</span>
+    <div class="block-text" title="${escapeHtml(text)}">${escapeHtml(text)}</div>
+    <button class="block-unfold-btn" type="button">Unfold ▾</button>
+  `;
+  return block;
+}
+
+function createOpenBoxElement(id, n, text, zoomData) {
+  const box = document.createElement('div');
+  box.className = 'tree-box';
+  box.id = `box-${id}-${n}`;
+
+  const header = document.createElement('div');
+  header.className = 'tree-box-header';
+  const rangeLabel = n > 1 ? `[#${id}–#${id + n - 1}]` : `[#${id}]`;
+  header.innerHTML = `<span>▲ Fold <b>${n}x</b> ${rangeLabel}</span>`;
+  header.onclick = (e) => {
+    e.stopPropagation();
+    foldBlock(id, n, text);
+  };
+  box.appendChild(header);
+
+  if (zoomData.is_leaf && zoomData.message) {
+    const bubbleWrapper = document.createElement('div');
+    bubbleWrapper.className = 'tree-box-body';
+    const m = zoomData.message;
+    const msgRow = document.createElement('div');
+    msgRow.className = `message-row ${m.kind}`;
+    
+    const msgHeader = document.createElement('div');
+    msgHeader.className = 'message-header';
+    const sender = document.createElement('span');
+    sender.className = 'message-sender';
+    sender.textContent = getSenderLabel(m.kind, m.text);
+    msgHeader.appendChild(sender);
+    if (m.date) {
+      const timeEl = document.createElement('span');
+      timeEl.className = 'message-time';
+      timeEl.textContent = formatTimestamp(m.date);
+      msgHeader.appendChild(timeEl);
+    }
+    
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerHTML = renderBubbleContent(m.kind, m.text);
+    
+    msgRow.appendChild(msgHeader);
+    msgRow.appendChild(bubble);
+    bubbleWrapper.appendChild(msgRow);
+    box.appendChild(bubbleWrapper);
+  } else if (Array.isArray(zoomData.children)) {
+    const childrenContainer = document.createElement('div');
+    childrenContainer.className = 'tree-box-children';
+    for (const child of zoomData.children) {
+      childrenContainer.appendChild(createBlockElement(child.id, child.n, child.text));
+    }
+    box.appendChild(childrenContainer);
+  }
+  return box;
+}
+
+async function unfoldBlock(id, n, text) {
+  const key = `${id}+${n}`;
+  const el = document.getElementById(`block-${id}-${n}`);
+  if (el) {
+    const btn = el.querySelector('.block-unfold-btn');
+    if (btn) btn.textContent = 'Opening...';
+  }
+
+  try {
+    const res = await fetch('/api/zoom', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, n })
+    });
+    const data = await res.json();
+    openBlocks.set(key, data);
+
+    const newEl = createBlockElement(id, n, text);
+    if (el && el.parentNode) {
+      el.parentNode.replaceChild(newEl, el);
+    }
+  } catch (e) {
+    console.error('Failed to unfold block:', e);
+    if (el) {
+      const btn = el.querySelector('.block-unfold-btn');
+      if (btn) btn.textContent = 'Error';
+    }
+  }
+}
+
+function foldBlock(id, n, text) {
+  const key = `${id}+${n}`;
+  openBlocks.delete(key);
+  const el = document.getElementById(`box-${id}-${n}`);
+  const newEl = createBlockElement(id, n, text);
+  if (el && el.parentNode) {
+    el.parentNode.replaceChild(newEl, el);
   }
 }
 
