@@ -208,6 +208,7 @@ def main() -> None:
     sync_parser.add_argument("--all", action="store_true", help="Sync with all configured peers in ~/.optchat/config.json")
     sync_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
     sync_parser.add_argument("--remote-dir", default=None, help="Remote chat directory (default: ~/.optchat)")
+    sync_parser.add_argument("--remote-bin", default=None, help="Path to optchat binary on remote peer (default: auto-detected in PATH, ~/.local/bin, ~/bin, Termux)")
 
     # sync-exchange command (internal stdio for SSH sync)
     sync_exchange_parser = subparsers.add_parser("sync-exchange", help="Internal SSH stdio handler for peer sync")
@@ -458,14 +459,18 @@ def main() -> None:
             try:
                 if use_daemon:
                     local_payload = client.sync_export()
-                    remote_response = sync_payload_over_ssh(peer, local_payload, remote_dir=args.remote_dir)
+                    remote_response = sync_payload_over_ssh(
+                        peer, local_payload, remote_dir=args.remote_dir, remote_bin=args.remote_bin
+                    )
                     res = client.sync_apply(remote_response)
                 else:
                     storage = Storage(chat_dir)
                     storage.open()
                     try:
                         local_payload = export_sync_payload(storage)
-                        remote_response = sync_payload_over_ssh(peer, local_payload, remote_dir=args.remote_dir)
+                        remote_response = sync_payload_over_ssh(
+                            peer, local_payload, remote_dir=args.remote_dir, remote_bin=args.remote_bin
+                        )
                         res = apply_sync_payload(storage, remote_response)
                     finally:
                         storage.close()

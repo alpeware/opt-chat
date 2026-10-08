@@ -309,17 +309,28 @@ def sync_payload_over_ssh(
     peer_host: str,
     local_payload: Dict[str, Any],
     remote_dir: Optional[str] = None,
+    remote_bin: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Exchange sync JSON payload with remote peer over SSH stdio."""
     ssh_bin = shutil.which("ssh")
     if not ssh_bin:
         raise RuntimeError("SSH binary not found in PATH")
 
-    cmd_prefix = "optchat sync-exchange"
-    if remote_dir:
-        cmd_prefix += f" --chat-dir {remote_dir}"
+    extra_args = f"--chat-dir {remote_dir}" if remote_dir else ""
+    if remote_bin:
+        remote_script = f"{remote_bin} sync-exchange {extra_args}".strip()
+    else:
+        # Non-interactive SSH shells often don't source ~/.bashrc where ~/.local/bin is added.
+        # We test for optchat in standard locations (PATH, ~/.local/bin, ~/bin, Termux), then fallback.
+        remote_script = (
+            f'if command -v optchat >/dev/null 2>&1; then exec optchat sync-exchange {extra_args}; '
+            f'elif [ -x "$HOME/.local/bin/optchat" ]; then exec "$HOME/.local/bin/optchat" sync-exchange {extra_args}; '
+            f'elif [ -x "$HOME/bin/optchat" ]; then exec "$HOME/bin/optchat" sync-exchange {extra_args}; '
+            f'elif [ -x "/data/data/com.termux/files/usr/bin/optchat" ]; then exec /data/data/com.termux/files/usr/bin/optchat sync-exchange {extra_args}; '
+            f'else export PATH="$HOME/.local/bin:$HOME/bin:/data/data/com.termux/files/usr/bin:$PATH"; exec optchat sync-exchange {extra_args}; fi'
+        )
 
-    remote_cmd = [ssh_bin, peer_host, cmd_prefix]
+    remote_cmd = [ssh_bin, peer_host, remote_script]
     input_bytes = (json.dumps(local_payload) + "\n").encode("utf-8")
 
     proc = subprocess.Popen(
@@ -345,10 +356,13 @@ def sync_over_ssh(
     peer_host: str,
     local_storage: Storage,
     remote_dir: Optional[str] = None,
+    remote_bin: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute peer-to-peer sync with a remote host over SSH using local storage."""
     local_payload = export_sync_payload(local_storage)
-    remote_response = sync_payload_over_ssh(peer_host, local_payload, remote_dir=remote_dir)
+    remote_response = sync_payload_over_ssh(
+        peer_host, local_payload, remote_dir=remote_dir, remote_bin=remote_bin
+    )
     result = apply_sync_payload(local_storage, remote_response)
     return result
 
