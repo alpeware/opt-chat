@@ -78,10 +78,34 @@ def test_sandbox_env_filter(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "super_secret_token")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setenv("GEMINI_API_KEY", "valid_gemini_key")
+    monkeypatch.setenv("ANTIGRAVITY_APP_DATA_DIR", "/custom/gemini/dir")
+    monkeypatch.setenv("ANTIGRAVITY_CSRF_TOKEN", "test-token-xyz")
 
     config = SandboxConfig(workspace=Path.cwd())
     filtered = SandboxManager.filter_env(config)
 
     assert "PATH" in filtered
     assert "GEMINI_API_KEY" in filtered
+    assert filtered.get("ANTIGRAVITY_APP_DATA_DIR") == "/custom/gemini/dir"
+    assert filtered.get("ANTIGRAVITY_CSRF_TOKEN") == "test-token-xyz"
     assert "SECRET_KEY" not in filtered
+
+
+def test_sandbox_gemini_dir_mount(tmp_path: Path, monkeypatch):
+    fake_gemini = tmp_path / "fake_gemini"
+    fake_gemini.mkdir()
+    monkeypatch.setenv("ANTIGRAVITY_APP_DATA_DIR", str(fake_gemini))
+
+    config = SandboxManager.create_default_config(workspace=tmp_path / "ws")
+    assert fake_gemini.resolve() in config.rw_dirs
+
+
+def test_sandbox_unshare_flags():
+    config = SandboxConfig(workspace=Path.cwd(), backend=SandboxBackend.UNSHARE)
+    cmd = ["agy", "test"]
+    wrapped = SandboxManager.wrap_command(cmd, config)
+    assert "--user" in wrapped
+    assert "--map-root-user" in wrapped
+    assert "--mount" in wrapped
+    assert wrapped[-2:] == ["agy", "test"]
+

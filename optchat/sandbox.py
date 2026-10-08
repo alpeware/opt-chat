@@ -87,7 +87,15 @@ class SandboxManager:
         optchat_resolved = Path(optchat_dir or os.path.expanduser("~/.optchat")).resolve()
         home = Path(os.path.expanduser("~")).resolve()
 
+        gemini_resolved = Path(os.environ.get("ANTIGRAVITY_APP_DATA_DIR", home / ".gemini")).resolve()
+        base_gemini = (home / ".gemini").resolve()
+
         rw = [ws_resolved, optchat_resolved]
+        if gemini_resolved.exists():
+            rw.append(gemini_resolved)
+        if base_gemini.exists() and base_gemini not in rw:
+            rw.append(base_gemini)
+
         hidden = [
             home / ".ssh",
             home / ".gnupg",
@@ -163,7 +171,7 @@ class SandboxManager:
     @staticmethod
     def _wrap_unshare(cmd: List[str], config: SandboxConfig) -> List[str]:
         unshare = shutil.which("unshare") or "unshare"
-        args = [unshare, "--mount"]
+        args = [unshare, "--user", "--map-root-user", "--mount"]
         if config.isolate_pid:
             args.extend(["--pid", "--fork"])
         args.append("--")
@@ -172,9 +180,13 @@ class SandboxManager:
 
     @staticmethod
     def filter_env(config: SandboxConfig) -> Dict[str, str]:
-        """Filter host environment to whitelist only permissible variables."""
+        """Filter host environment to whitelist permissible variables and all Antigravity/Gemini settings."""
         filtered = {}
         for k in config.env_whitelist:
             if k in os.environ:
                 filtered[k] = os.environ[k]
+        for k, v in os.environ.items():
+            if k.startswith("ANTIGRAVITY_") or k.startswith("GEMINI_"):
+                filtered[k] = v
         return filtered
+
