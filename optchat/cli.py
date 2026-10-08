@@ -274,14 +274,23 @@ def main() -> None:
         asyncio.run(server.run_stdio())
 
     elif args.subcommand == "browse":
-        storage = Storage(Path(args.chat_dir))
-        storage.open()
-        view = LiveView(storage)
-        view.rebuild()
-        target_out = Path(args.output) if args.output else storage.chat_dir / "browse.html"
-        out_path = export_html_to_file(storage, view, target_out)
-        console.print(f"[green]HTML report exported to {out_path}[/green]")
-        storage.close()
+        from optchat.engine_client import EngineClient
+        chat_dir = Path(args.chat_dir)
+        client = EngineClient(socket_path=chat_dir / "engine.sock")
+        target_out = Path(args.output) if args.output else chat_dir / "browse.html"
+        if client.is_daemon_alive():
+            res = client.call("export_browse")
+            console.print(f"[green]HTML report exported to {res.get('path', target_out)}[/green]")
+        else:
+            storage = Storage(chat_dir)
+            storage.open()
+            try:
+                view = LiveView(storage)
+                view.rebuild()
+                out_path = export_html_to_file(storage, view, target_out)
+                console.print(f"[green]HTML report exported to {out_path}[/green]")
+            finally:
+                storage.close()
 
     elif args.subcommand == "import":
         storage = Storage(Path(args.chat_dir))
