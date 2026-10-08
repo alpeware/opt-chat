@@ -23,8 +23,14 @@ from optchat.constants import CAP, NODE
 logger = logging.getLogger("optchat.storage")
 
 
-def get_device_name() -> str:
-    """Return device identifier for multi-device synchronization.
+def get_device_name(cfg_path: Optional[Path] = None) -> str:
+    """Return device identifier for multi-device synchronization."""
+    name, _ = get_device_name_info(cfg_path=cfg_path)
+    return name
+
+
+def get_device_name_info(cfg_path: Optional[Path] = None) -> Tuple[str, str]:
+    """Return tuple of (device_name, source_description).
 
     Checks:
     1. Environment variable: OPTCHAT_DEVICE_NAME
@@ -34,26 +40,29 @@ def get_device_name() -> str:
     """
     dev = os.environ.get("OPTCHAT_DEVICE_NAME")
     if dev and dev.strip():
-        return dev.strip()
+        return dev.strip(), "environment variable (OPTCHAT_DEVICE_NAME)"
 
-    cfg_path = Path(os.path.expanduser("~/.optchat/config.json"))
+    if cfg_path is None:
+        cfg_path = Path(os.path.expanduser("~/.optchat/config.json"))
     if cfg_path.is_file():
         try:
             with open(cfg_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 val = data.get("device_name")
                 if val and str(val).strip():
-                    return str(val).strip()
+                    return str(val).strip(), f"config file ({cfg_path})"
         except Exception:
             pass
 
     try:
         host = socket.gethostname().split(".")[0].strip()
         if host and host.lower() != "localhost":
-            return host
-        return "android" if os.path.exists("/data/data/com.termux") else "node"
+            return host, "system hostname"
+        if os.path.exists("/data/data/com.termux"):
+            return "android", "Termux auto-detection"
+        return "node", "fallback"
     except Exception:
-        return "node"
+        return "node", "fallback"
 
 
 class Message:

@@ -110,3 +110,21 @@ def test_single_writer_lock(tmp_path: Path):
     # After release, lock2 can acquire
     lock2.acquire()
     lock2.release()
+
+
+def test_device_name_resolution(tmp_path: Path, monkeypatch):
+    from optchat.storage import get_device_name, get_device_name_info
+
+    # 1. Environment variable override
+    monkeypatch.setenv("OPTCHAT_DEVICE_NAME", "custom-node")
+    name, source = get_device_name_info()
+    assert name == "custom-node"
+    assert "environment" in source
+
+    # 2. Config file
+    monkeypatch.delenv("OPTCHAT_DEVICE_NAME", raising=False)
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps({"device_name": "config-node"}))
+    name, source = get_device_name_info(cfg_path=cfg_file)
+    assert name == "config-node"
+    assert "config file" in source

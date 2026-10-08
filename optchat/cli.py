@@ -267,6 +267,15 @@ def main() -> None:
     web_parser.add_argument("--workspace", default=None, help="Workspace directory for agy execution (default: opt-chat)")
     web_parser.add_argument("--conversation", default=None, help="Antigravity conversation ID to resume")
 
+    # device command
+    device_parser = subparsers.add_parser(
+        "device",
+        aliases=["device-name", "whoami"],
+        help="Display or configure the local device name",
+    )
+    device_parser.add_argument("--set", dest="set_name", default=None, help="Set persistent device name in ~/.optchat/config.json")
+    device_parser.add_argument("--verbose", "-v", action="store_true", help="Display resolution source and configuration details")
+
     args = parser.parse_args()
 
     if args.subcommand == "mcp":
@@ -507,6 +516,39 @@ def main() -> None:
         ws = Path(args.workspace) if args.workspace else None
         target = uninstall_hooks(workspace_dir=ws, global_config=(ws is None))
         console.print(f"[yellow]OptChat memory bridge hooks removed from {target}[/yellow]")
+
+    elif args.subcommand in ("device", "device-name", "whoami"):
+        from optchat.storage import get_device_name_info
+        from optchat.sync import get_configured_peers, get_ssh_config_hosts
+
+        cfg_path = Path(os.path.expanduser("~/.optchat/config.json"))
+        if getattr(args, "set_name", None):
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            cfg_data = {}
+            if cfg_path.is_file():
+                try:
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg_data = json.load(f)
+                except Exception:
+                    pass
+            cfg_data["device_name"] = args.set_name.strip()
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg_data, f, indent=2)
+            console.print(f"[green]Device name set to '{args.set_name.strip()}' in {cfg_path}[/green]")
+            return
+
+        name, source = get_device_name_info()
+        if getattr(args, "verbose", False):
+            console.print(f"[bold cyan]OptChat Device Name:[/bold cyan] {name}")
+            console.print(f"[dim]Resolution Source:[/dim]   {source}")
+            peers = get_configured_peers(cfg_path.parent)
+            if peers:
+                console.print(f"[dim]Configured Peers:[/dim]    {', '.join(peers)}")
+            detected_ssh = get_ssh_config_hosts()
+            if detected_ssh:
+                console.print(f"[dim]SSH Host Aliases:[/dim]    {', '.join(detected_ssh)}")
+        else:
+            console.print(name)
 
     elif args.subcommand == "web":
         from optchat.web_server import run_web_app
