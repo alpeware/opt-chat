@@ -44,6 +44,8 @@ HTML_PAGE = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
   <title>OptChat Web</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
   <style>
     :root {
       --app-height: 100%;
@@ -362,6 +364,33 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     .bubble tbody tr:hover {
       background: rgba(255, 255, 255, 0.04);
+    }
+
+    /* KaTeX Math Styling */
+    .katex-display-wrapper {
+      margin: 10px 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      text-align: center;
+    }
+    .katex-display {
+      margin: 0 !important;
+      padding: 4px 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+    }
+    .katex {
+      font-size: 1.05em;
+      color: inherit;
+    }
+    .math-pending {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--accent);
+      background: rgba(56, 189, 248, 0.08);
+      padding: 1px 4px;
+      border-radius: 4px;
     }
 
     .cursor-stream {
@@ -916,21 +945,91 @@ HTML_PAGE = """<!DOCTYPE html>
       return bubble;
     }
 
-    // Lightweight markdown formatter
+    function renderMathToken(math, display) {
+      if (typeof katex !== 'undefined' && katex.renderToString) {
+        try {
+          return katex.renderToString(math, {
+            displayMode: display,
+            throwOnError: false
+          });
+        } catch (e) {
+          const esc = math.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          return display ? `<div class="katex-display-wrapper"><pre><code>$$${esc}$$</code></pre></div>` : `<code>$${esc}$</code>`;
+        }
+      }
+      const esc = math.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return `<span class="math-pending" data-math="${encodeURIComponent(math)}" data-display="${display}">${display ? '$$' + esc + '$$' : '$' + esc + '$'}</span>`;
+    }
+
+    function hydratePendingMath() {
+      if (typeof katex === 'undefined') return;
+      document.querySelectorAll('.math-pending').forEach(el => {
+        try {
+          const rawMath = decodeURIComponent(el.getAttribute('data-math') || '');
+          const isDisp = el.getAttribute('data-display') === 'true';
+          const rendered = katex.renderToString(rawMath, { displayMode: isDisp, throwOnError: false });
+          el.outerHTML = rendered;
+        } catch (e) {}
+      });
+    }
+
+    window.addEventListener('load', hydratePendingMath);
+    setTimeout(hydratePendingMath, 400);
+    setTimeout(hydratePendingMath, 1200);
+    setTimeout(hydratePendingMath, 3000);
+
+    // Lightweight markdown formatter with KaTeX Math support
     function formatMarkdown(text) {
       if (!text) return '';
-      let escaped = text
+      
+      const codeBlocks = [];
+      const mathBlocks = [];
+
+      // 1. Protect code blocks ```...```
+      let processed = text.replace(/```([a-z0-9_-]*)\\n([\\s\\S]*?)```/gi, (match, lang, code) => {
+        const idx = codeBlocks.length;
+        const escCode = code.trim().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        codeBlocks.push(`<pre><code>${escCode}</code></pre>`);
+        return `@@OPTCHAT_CODE_${idx}@@`;
+      });
+
+      // 2. Protect inline code `...`
+      processed = processed.replace(/`([^`]+)`/g, (match, code) => {
+        const idx = codeBlocks.length;
+        const escCode = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        codeBlocks.push(`<code>${escCode}</code>`);
+        return `@@OPTCHAT_CODE_${idx}@@`;
+      });
+
+      // 3. Extract display math: $$...$$ and \\[...\\]
+      processed = processed.replace(/\\$\\$([\\s\\S]*?)\\$\\$/g, (match, math) => {
+        const idx = mathBlocks.length;
+        mathBlocks.push({ math: math.trim(), display: true });
+        return `\\n@@OPTCHAT_MATH_${idx}@@\\n`;
+      });
+      processed = processed.replace(/\\\\\\[([\\s\\S]*?)\\\\\\]/g, (match, math) => {
+        const idx = mathBlocks.length;
+        mathBlocks.push({ math: math.trim(), display: true });
+        return `\\n@@OPTCHAT_MATH_${idx}@@\\n`;
+      });
+
+      // 4. Extract inline math: $...$ and \\(...\\)
+      processed = processed.replace(/(?<!\\\\)\\$([^\\$\\s\\n](?:[^\\$\\n]*?[^\\$\\s\\n])?)(?<!\\\\)\\$/g, (match, math) => {
+        const idx = mathBlocks.length;
+        mathBlocks.push({ math: math.trim(), display: false });
+        return `@@OPTCHAT_MATH_${idx}@@`;
+      });
+      processed = processed.replace(/\\\\\\(([\\s\\S]*?)\\\\\\)/g, (match, math) => {
+        const idx = mathBlocks.length;
+        mathBlocks.push({ math: math.trim(), display: false });
+        return `@@OPTCHAT_MATH_${idx}@@`;
+      });
+
+      // 5. Escape HTML for remaining prose
+      let escaped = processed
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
-      
-      // Code blocks
-      escaped = escaped.replace(/```([a-z0-9_-]*)\\n([\\s\\S]*?)```/gi, (match, lang, code) => {
-        return `<pre><code>${code.trim()}</code></pre>`;
-      });
-
-      // Inline code
-      escaped = escaped.replace(/`([^`]+)`/g, '<code>$1</code>');
 
       // Bold & Italic
       escaped = escaped.replace(/\\*\\*([^\\*]+)\\*\\*/g, '<strong>$1</strong>');
@@ -940,7 +1039,7 @@ HTML_PAGE = """<!DOCTYPE html>
       escaped = escaped.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\)]+)\\)/g, '<a href="$2" target="_blank" style="color: var(--accent); text-decoration: underline;">$1</a>');
 
       // Plain URLs
-      escaped = escaped.replace(/(^|[^"'>])(https?:\\/\\/[^\\s<]+)/g, '$1<a href="$2" target="_blank" style="color: var(--accent);">$2</a>');
+      escaped = escaped.replace(/(^|[^"\\x27>])(https?:\\/\\/[^\\s<]+)/g, '$1<a href="$2" target="_blank" style="color: var(--accent);">$2</a>');
 
       // Tables, paragraphs, headers, rules, lists, quotes
       const lines = escaped.split('\\n');
@@ -978,6 +1077,18 @@ HTML_PAGE = """<!DOCTYPE html>
           output.push('<br>');
           i++;
           continue;
+        }
+
+        // Check if line is a standalone display math placeholder
+        const dispMathMatch = trimmed.match(/^@@OPTCHAT_MATH_(\\d+)@@$/);
+        if (dispMathMatch) {
+          const idx = parseInt(dispMathMatch[1], 10);
+          const b = mathBlocks[idx];
+          if (b && b.display) {
+            output.push(`<div class="katex-display-wrapper">${renderMathToken(b.math, true)}</div>`);
+            i++;
+            continue;
+          }
         }
 
         // Check for table header + separator
@@ -1057,7 +1168,20 @@ HTML_PAGE = """<!DOCTYPE html>
         output.push(`<p>${line}</p>`);
         i++;
       }
-      return output.join('');
+
+      let res = output.join('');
+
+      // 6. Restore code blocks
+      codeBlocks.forEach((codeHtml, idx) => {
+        res = res.replace(new RegExp(`@@OPTCHAT_CODE_${idx}@@`, 'g'), codeHtml);
+      });
+
+      // 7. Restore remaining math blocks
+      mathBlocks.forEach((b, idx) => {
+        res = res.replace(new RegExp(`@@OPTCHAT_MATH_${idx}@@`, 'g'), () => renderMathToken(b.math, b.display));
+      });
+
+      return res;
     }
 
     async function sendMessage() {

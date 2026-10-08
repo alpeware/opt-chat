@@ -33,6 +33,9 @@ async def test_web_server_endpoints(tmp_path: Path):
         text = await res.text()
         assert "OptChat" in text
         assert "<!DOCTYPE html>" in text
+        assert "katex.min.css" in text
+        assert "katex.min.js" in text
+        assert "renderMathToken" in text
 
         # 2. Test api/state
         res = await client.get("/api/state")
