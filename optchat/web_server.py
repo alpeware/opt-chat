@@ -168,10 +168,160 @@ HTML_PAGE = """<!DOCTYPE html>
     .message-row.user { align-items: flex-end; }
     .message-row.talk, .message-row.tool { align-items: flex-start; }
 
+    .message-header {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin-bottom: 2px;
+      padding: 0 4px;
+      max-width: 88%;
+    }
+    .message-row.user .message-header {
+      flex-direction: row-reverse;
+      align-self: flex-end;
+    }
+    .message-row.talk .message-header,
+    .message-row.work .message-header,
+    .message-row.note .message-header,
+    .message-row.tool .message-header {
+      align-self: flex-start;
+    }
     .message-sender {
       font-size: 0.72rem;
       color: var(--text-muted);
-      padding: 0 4px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    .user .message-sender {
+      color: var(--accent);
+    }
+    .talk .message-sender {
+      color: #94a3b8;
+    }
+    .work .message-sender {
+      color: #c084fc;
+      font-weight: 600;
+    }
+    .message-time {
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      opacity: 0.65;
+      font-weight: 400;
+      white-space: nowrap;
+    }
+    .message-time:hover {
+      opacity: 1;
+    }
+
+    /* Collapsible Messages */
+    details.msg-details {
+      width: 100%;
+    }
+    details.msg-details > summary {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      user-select: none;
+      outline: none;
+    }
+    details.msg-details > summary::-webkit-details-marker {
+      display: none;
+    }
+    details.msg-details > summary::marker {
+      display: none;
+    }
+
+    .summary-icon {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      transform: rotate(-45deg);
+      transition: transform 0.15s ease;
+      flex-shrink: 0;
+      margin-left: 2px;
+      opacity: 0.7;
+    }
+    details.msg-details[open] > summary .summary-icon {
+      transform: rotate(45deg);
+    }
+
+    /* Collapsed state */
+    details.msg-details:not([open]) > summary {
+      color: inherit;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 0.88rem;
+    }
+    details.msg-details:not([open]) > summary .summary-preview {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex-grow: 1;
+      opacity: 0.9;
+    }
+    details.msg-details:not([open]) > summary .summary-action {
+      font-size: 0.68rem;
+      opacity: 0.6;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 1px 6px;
+      border-radius: 8px;
+      flex-shrink: 0;
+      margin-left: auto;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    details.msg-details:not([open]) > summary .summary-action::after {
+      content: "Expand";
+    }
+    details.msg-details:not([open]):hover > summary .summary-action {
+      opacity: 0.95;
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    /* Open state */
+    details.msg-details[open] > summary {
+      opacity: 0.4;
+      font-size: 0.7rem;
+      letter-spacing: 0.02em;
+      margin-bottom: 8px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      transition: opacity 0.2s;
+    }
+    details.msg-details[open] > summary:hover {
+      opacity: 0.9;
+    }
+    details.msg-details[open] > summary .summary-preview {
+      display: none;
+    }
+    details.msg-details[open] > summary .summary-action {
+      font-size: 0.68rem;
+      opacity: 0.7;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    details.msg-details[open] > summary .summary-action::after {
+      content: "Collapse";
+    }
+
+    /* Subagent work styling for collapsed state */
+    .work details.msg-details:not([open]) > summary .summary-action {
+      background: rgba(168, 85, 247, 0.25);
+      color: #d8b4fe;
+      opacity: 0.9;
+    }
+    .work details.msg-details:not([open]):hover > summary .summary-action {
+      background: rgba(168, 85, 247, 0.4);
+      color: #fff;
+    }
+    .bubble:has(details.msg-details:not([open])) {
+      padding: 9px 14px;
+      cursor: pointer;
     }
     .bubble {
       max-width: 88%;
@@ -727,7 +877,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function handleStreamEvent(event) {
       if (event.type === 'token' || event.type === 'text') {
         if (!currentAssistantBubble) {
-          currentAssistantBubble = pendingAssistantBubbles.shift() || appendMessage('talk', '', '', true);
+          currentAssistantBubble = pendingAssistantBubbles.shift() || appendMessage('talk', '', new Date().toISOString(), true);
           currentStreamedText = '';
         }
         currentStreamedText += event.content;
@@ -735,10 +885,27 @@ HTML_PAGE = """<!DOCTYPE html>
         scrollToBottom();
       } else if (event.type === 'log_talk') {
         if (!currentAssistantBubble) {
-          currentAssistantBubble = pendingAssistantBubbles.shift() || appendMessage('talk', '', '', false);
+          currentAssistantBubble = pendingAssistantBubbles.shift() || appendMessage('talk', '', new Date().toISOString(), false);
         }
         currentStreamedText = event.content;
-        currentAssistantBubble.innerHTML = formatMarkdown(currentStreamedText);
+        currentAssistantBubble.innerHTML = renderBubbleContent('talk', currentStreamedText);
+        const row = currentAssistantBubble.closest('.message-row');
+        if (row) {
+          let timeEl = row.querySelector('.message-time');
+          if (!timeEl) {
+            const header = row.querySelector('.message-header');
+            if (header) {
+              timeEl = document.createElement('span');
+              timeEl.className = 'message-time';
+              header.appendChild(timeEl);
+            }
+          }
+          if (timeEl && !timeEl.textContent) {
+            const nowIso = new Date().toISOString();
+            timeEl.textContent = formatTimestamp(nowIso);
+            timeEl.title = nowIso;
+          }
+        }
         currentAssistantBubble = null;
         currentStreamedText = '';
         scrollToBottom();
@@ -925,25 +1092,113 @@ HTML_PAGE = """<!DOCTYPE html>
       sendMessage();
     }
 
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatTimestamp(dateStr) {
+      if (!dateStr) return '';
+      try {
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return '';
+        const now = new Date();
+        const isToday = d.toDateString() === now.toDateString();
+        const timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        if (isToday) {
+          return timeStr;
+        }
+        const monthStr = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        return `${monthStr}, ${timeStr}`;
+      } catch (e) {
+        return '';
+      }
+    }
+
+    function getMessagePreview(text, kind) {
+      if (!text) return kind === 'work' ? 'Subagent report' : 'Message';
+      let clean = text
+        .replace(/```[\\s\\S]*?```/g, ' [code] ')
+        .replace(/\\$\\$[\\s\\S]*?\\$\\$/g, ' [formula] ')
+        .replace(/#/g, '')
+        .replace(/[*_`~>|]/g, '')
+        .replace(/\\s+/g, ' ')
+        .trim();
+      if (!clean) return kind === 'work' ? 'Subagent report' : 'Message';
+      if (clean.length > 130) {
+        return clean.slice(0, 130) + '...';
+      }
+      return clean;
+    }
+
+    function renderBubbleContent(kind, text) {
+      const isMultiLine = text.includes('\n') || text.length > 100;
+      const isCollapsible = kind === 'work' || isMultiLine;
+      if (!isCollapsible) {
+        return formatMarkdown(text);
+      }
+      const isOpen = kind !== 'work';
+      const preview = escapeHtml(getMessagePreview(text, kind));
+      const fullHtml = formatMarkdown(text);
+
+      return `
+        <details class="msg-details" ${isOpen ? 'open' : ''}>
+          <summary class="msg-summary">
+            <span class="summary-icon"></span>
+            <span class="summary-preview">${preview}</span>
+            <span class="summary-action"></span>
+          </summary>
+          <div class="msg-body">${fullHtml}</div>
+        </details>
+      `;
+    }
+
     function appendMessage(kind, text, dateStr, isStreaming = false) {
       const stream = document.getElementById('chat-stream');
       const row = document.createElement('div');
       row.className = `message-row ${kind}`;
       
+      const header = document.createElement('div');
+      header.className = 'message-header';
+
       const sender = document.createElement('span');
       sender.className = 'message-sender';
       sender.textContent = kind === 'user' ? 'You' : (kind === 'talk' ? 'OptChat' : (kind === 'work' ? 'SUBAGENT' : kind.toUpperCase()));
-      
+      header.appendChild(sender);
+
+      if (dateStr) {
+        const timeEl = document.createElement('span');
+        timeEl.className = 'message-time';
+        timeEl.textContent = formatTimestamp(dateStr);
+        timeEl.title = dateStr;
+        header.appendChild(timeEl);
+      }
+
       const bubble = document.createElement('div');
       bubble.className = 'bubble';
-      bubble.innerHTML = formatMarkdown(text) + (isStreaming ? '<span class="cursor-stream"></span>' : '');
+      if (isStreaming) {
+        bubble.innerHTML = formatMarkdown(text) + '<span class="cursor-stream"></span>';
+      } else {
+        bubble.innerHTML = renderBubbleContent(kind, text);
+      }
 
-      row.appendChild(sender);
+      row.appendChild(header);
       row.appendChild(bubble);
       stream.appendChild(row);
       scrollToBottom();
       return bubble;
     }
+
+    document.addEventListener('toggle', (e) => {
+      if (e.target && e.target.open && e.target.classList.contains('msg-details')) {
+        hydratePendingMath();
+      }
+    }, true);
 
     function renderMathToken(math, display) {
       if (typeof katex !== 'undefined' && katex.renderToString) {
@@ -1198,7 +1453,7 @@ HTML_PAGE = """<!DOCTYPE html>
       appendMessage('user', text, new Date().toISOString());
 
       // Create a pending assistant bubble that will receive stream events
-      const bubble = appendMessage('talk', '', '', true);
+      const bubble = appendMessage('talk', '', new Date().toISOString(), true);
       bubble.innerHTML = `<span style="color: var(--text-dim); font-style: italic;">⏳ Queued...</span>`;
       pendingAssistantBubbles.push(bubble);
 

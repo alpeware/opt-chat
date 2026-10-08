@@ -36,6 +36,8 @@ async def test_web_server_endpoints(tmp_path: Path):
         assert "katex.min.css" in text
         assert "katex.min.js" in text
         assert "renderMathToken" in text
+        assert "msg-details" in text
+        assert "formatTimestamp" in text
 
         # 2. Test api/state
         res = await client.get("/api/state")
