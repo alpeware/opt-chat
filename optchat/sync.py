@@ -231,6 +231,57 @@ def get_configured_peers(chat_dir: Optional[Path] = None) -> List[str]:
     return []
 
 
+def add_configured_peer(peer_name: str, chat_dir: Optional[Path] = None) -> bool:
+    """Add a peer to ~/.optchat/config.json. Returns True if added, False if already present."""
+    if chat_dir is None:
+        chat_dir = Path(os.path.expanduser("~/.optchat"))
+    chat_dir.mkdir(parents=True, exist_ok=True)
+    cfg_path = chat_dir / "config.json"
+    data: Dict[str, Any] = {}
+    if cfg_path.is_file():
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+    peers: List[str] = data.get("peers", [])
+    if not isinstance(peers, list):
+        peers = []
+    clean_name = peer_name.strip()
+    if not clean_name or clean_name in peers:
+        return False
+    peers.append(clean_name)
+    data["peers"] = peers
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    return True
+
+
+def remove_configured_peer(peer_name: str, chat_dir: Optional[Path] = None) -> bool:
+    """Remove a peer from ~/.optchat/config.json. Returns True if removed, False if not found."""
+    if chat_dir is None:
+        chat_dir = Path(os.path.expanduser("~/.optchat"))
+    cfg_path = chat_dir / "config.json"
+    if not cfg_path.is_file():
+        return False
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return False
+    peers = data.get("peers", [])
+    if not isinstance(peers, list):
+        return False
+    clean_name = peer_name.strip()
+    if clean_name not in peers:
+        return False
+    peers.remove(clean_name)
+    data["peers"] = peers
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    return True
+
+
 def get_ssh_config_hosts(ssh_config_path: Optional[Path] = None) -> List[str]:
     """Detect non-wildcard host aliases defined in ~/.ssh/config."""
     if ssh_config_path is None:

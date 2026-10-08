@@ -276,6 +276,18 @@ def main() -> None:
     device_parser.add_argument("--set", dest="set_name", default=None, help="Set persistent device name in ~/.optchat/config.json")
     device_parser.add_argument("--verbose", "-v", action="store_true", help="Display resolution source and configuration details")
 
+    # peer command
+    peer_parser = subparsers.add_parser("peer", aliases=["peers"], help="Manage synchronized peer nodes in config.json")
+    peer_subparsers = peer_parser.add_subparsers(dest="peer_action")
+
+    peer_add_parser = peer_subparsers.add_parser("add", help="Add one or more peers to ~/.optchat/config.json")
+    peer_add_parser.add_argument("names", nargs="+", help="Peer SSH host aliases to add (e.g. phone, laptop)")
+
+    peer_rm_parser = peer_subparsers.add_parser("remove", aliases=["rm"], help="Remove one or more peers from ~/.optchat/config.json")
+    peer_rm_parser.add_argument("names", nargs="+", help="Peer SSH host aliases to remove")
+
+    peer_list_parser = peer_subparsers.add_parser("list", aliases=["ls"], help="List configured peers")
+
     args = parser.parse_args()
 
     if args.subcommand == "mcp":
@@ -549,6 +561,49 @@ def main() -> None:
                 console.print(f"[dim]SSH Host Aliases:[/dim]    {', '.join(detected_ssh)}")
         else:
             console.print(name)
+
+    elif args.subcommand in ("peer", "peers"):
+        from optchat.sync import (
+            add_configured_peer,
+            get_configured_peers,
+            get_ssh_config_hosts,
+            remove_configured_peer,
+        )
+
+        chat_dir = Path(os.path.expanduser("~/.optchat"))
+        action = getattr(args, "peer_action", None)
+
+        if action == "add":
+            for name in args.names:
+                added = add_configured_peer(name, chat_dir)
+                if added:
+                    console.print(f"[green]Added peer '{name}' to {chat_dir}/config.json[/green]")
+                else:
+                    console.print(f"[yellow]Peer '{name}' is already in {chat_dir}/config.json[/yellow]")
+
+        elif action in ("remove", "rm"):
+            for name in args.names:
+                removed = remove_configured_peer(name, chat_dir)
+                if removed:
+                    console.print(f"[green]Removed peer '{name}' from {chat_dir}/config.json[/green]")
+                else:
+                    console.print(f"[yellow]Peer '{name}' was not found in {chat_dir}/config.json[/yellow]")
+
+        else:
+            # list / ls / default
+            peers = get_configured_peers(chat_dir)
+            if peers:
+                console.print("[bold cyan]Configured Peers:[/bold cyan]")
+                for p in peers:
+                    console.print(f"  • {p}")
+            else:
+                console.print(f"[yellow]No peers configured in {chat_dir}/config.json[/yellow]")
+
+            detected_ssh = get_ssh_config_hosts()
+            unadded = [h for h in detected_ssh if h not in peers]
+            if unadded:
+                console.print(f"\n[dim]Available SSH host aliases: {', '.join(unadded)}[/dim]")
+                console.print(f"[dim]Tip: Add one with 'optchat peer add <name>'[/dim]")
 
     elif args.subcommand == "web":
         from optchat.web_server import run_web_app

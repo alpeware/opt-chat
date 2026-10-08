@@ -151,6 +151,17 @@ def test_peer_discovery_and_ssh_hosts(tmp_path: Path, monkeypatch):
     peers = get_configured_peers(chat_dir)
     assert peers == ["desktop", "phone", "laptop"]
 
+    # Test add_configured_peer
+    from optchat.sync import add_configured_peer, remove_configured_peer
+    assert add_configured_peer("tablet", chat_dir) is True
+    assert add_configured_peer("tablet", chat_dir) is False  # Duplicate
+    assert "tablet" in get_configured_peers(chat_dir)
+
+    # Test remove_configured_peer
+    assert remove_configured_peer("phone", chat_dir) is True
+    assert remove_configured_peer("phone", chat_dir) is False  # Already removed
+    assert "phone" not in get_configured_peers(chat_dir)
+
     # Test ssh config parser
     fake_ssh_dir = tmp_path / ".ssh"
     fake_ssh_dir.mkdir()
