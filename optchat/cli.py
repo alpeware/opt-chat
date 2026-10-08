@@ -194,6 +194,23 @@ def main() -> None:
     daemon_parser.add_argument("--compactor-model", default=None, help="Compactor model name (e.g. gemini-3.8-flash-low)")
     daemon_parser.add_argument("--socket-path", default=None, help="Unix domain socket path (default: <chat-dir>/engine.sock)")
     daemon_parser.add_argument("--provider", default="agy", choices=["agy", "mock"], help="LLM Provider for compactor (default: agy)")
+    daemon_parser.add_argument("--sandbox", default="none", choices=["auto", "bwrap", "proot", "unshare", "none"], help="Sandbox isolation for daemon and child agy invocations (default: none)")
+
+    # exec command
+    exec_parser = subparsers.add_parser("exec", help="Run a command (e.g. agy) inside the OptChat sandbox")
+    exec_parser.add_argument("--sandbox", default="auto", choices=["auto", "bwrap", "proot", "unshare", "none"], help="Sandbox backend (default: auto)")
+    exec_parser.add_argument("--workspace", default=None, help="Workspace directory to mount read-write (default: current directory)")
+    exec_parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command and arguments to execute")
+
+    # sync command
+    sync_parser = subparsers.add_parser("sync", help="Synchronize memory idempotently with a remote peer over SSH")
+    sync_parser.add_argument("peer", help="Remote SSH host or user@host (e.g. desktop, laptop, phone)")
+    sync_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+    sync_parser.add_argument("--remote-dir", default=None, help="Remote chat directory (default: ~/.optchat)")
+
+    # sync-exchange command (internal stdio for SSH sync)
+    sync_exchange_parser = subparsers.add_parser("sync-exchange", help="Internal SSH stdio handler for peer sync")
+    sync_exchange_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
 
     # hook command
     hook_parser = subparsers.add_parser("hook", help="Execute Antigravity lifecycle hook")
@@ -240,7 +257,7 @@ def main() -> None:
 
     # web command
     web_parser = subparsers.add_parser("web", help="Start the responsive mobile/desktop web interface")
-    web_parser.add_argument("--host", default="0.0.0.0", help="Host interface to listen on (default: 0.0.0.0)")
+    web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to listen on (default: 127.0.0.1 for browser Secure Context voice dictation)")
     web_parser.add_argument("--port", type=int, default=8765, help="Port to listen on (default: 8765)")
     web_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
     web_parser.add_argument("--provider", default="agy", choices=["agy", "mock"], help="LLM Provider (default: agy)")
@@ -356,8 +373,61 @@ def main() -> None:
                 compactor_model=args.compactor_model,
                 socket_path=socket_path,
                 provider_name=args.provider,
+                sandbox=args.sandbox,
             )
         )
+
+    elif args.subcommand == "exec":
+        import subprocess
+        from optchat.sandbox import SandboxManager
+        ws = Path(args.workspace) if args.workspace else Path.cwd()
+        backend = SandboxManager.detect_backend(args.sandbox)
+        config = SandboxManager.create_default_config(ws, backend=backend)
+        cmd_to_run = list(args.cmd)
+        if cmd_to_run and cmd_to_run[0] == "--":
+            cmd_to_run = cmd_to_run[1:]
+        if not cmd_to_run:
+            console.print("[red]Error: No command specified to execute.[/red]")
+            return
+        wrapped = SandboxManager.wrap_command(cmd_to_run, config)
+        env = SandboxManager.filter_env(config)
+        ret = subprocess.call(wrapped, env={**os.environ, **env})
+        sys.exit(ret)
+
+    elif args.subcommand == "sync":
+        from optchat.sync import sync_over_ssh
+        storage = Storage(Path(args.chat_dir))
+        storage.open()
+        view = LiveView(storage)
+        view.rebuild()
+        console.print(f"[cyan]Syncing memory idempotently with peer '{args.peer}' over SSH...[/cyan]")
+        try:
+            res = sync_over_ssh(args.peer, storage, remote_dir=args.remote_dir)
+            view.rebuild()
+            console.print(f"[green]Sync complete! Total messages: {res['messages_count']} (+{res['imported_messages']} new, +{res['imported_nodes']} tree nodes).[/green]")
+        except Exception as e:
+            console.print(f"[red]Sync failed: {e}[/red]")
+        finally:
+            storage.close()
+
+    elif args.subcommand == "sync-exchange":
+        from optchat.sync import export_sync_payload, apply_sync_payload
+        storage = Storage(Path(args.chat_dir))
+        storage.open()
+        try:
+            input_data = sys.stdin.read()
+            if input_data.strip():
+                try:
+                    payload = json.loads(input_data)
+                    apply_sync_payload(storage, payload)
+                except Exception as e:
+                    logger.warning("Failed to apply incoming sync payload: %s", e)
+            response = export_sync_payload(storage)
+            sys.stdout.write(json.dumps(response) + "\n")
+            sys.stdout.flush()
+        finally:
+            storage.close()
+
 
     elif args.subcommand == "hook":
         from optchat.hooks import handle_hook_command

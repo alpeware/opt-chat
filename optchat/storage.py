@@ -23,15 +23,27 @@ from optchat.constants import CAP, NODE
 logger = logging.getLogger("optchat.storage")
 
 
-class Message:
-    __slots__ = ("i", "kind", "text", "size", "date")
+def get_device_name() -> str:
+    """Return device identifier for multi-device synchronization."""
+    dev = os.environ.get("OPTCHAT_DEVICE_NAME")
+    if dev:
+        return dev.strip()
+    try:
+        return socket.gethostname().split(".")[0].strip() or "node"
+    except Exception:
+        return "node"
 
-    def __init__(self, i: int, kind: str, text: str, size: int, date: str):
+
+class Message:
+    __slots__ = ("i", "kind", "text", "size", "date", "key")
+
+    def __init__(self, i: int, kind: str, text: str, size: int, date: str, key: Optional[str] = None):
         self.i = i
         self.kind = kind
         self.text = text
         self.size = size
         self.date = date
+        self.key = key or f"{date}#{get_device_name()}"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -40,17 +52,22 @@ class Message:
             "text": self.text,
             "size": self.size,
             "date": self.date,
+            "key": self.key,
         }
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> Message:
+        date_str = str(d["date"])
+        key_str = str(d.get("key") or f"{date_str}#{get_device_name()}")
         return cls(
             i=int(d["i"]),
             kind=str(d["kind"]),
             text=str(d["text"]),
             size=int(d.get("size", len(f"{d['kind']}: {d['text']}".encode("utf-8")))),
-            date=str(d["date"]),
+            date=date_str,
+            key=key_str,
         )
+
 
 
 class TreeNode:

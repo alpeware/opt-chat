@@ -78,11 +78,21 @@ class OptChatDaemon:
         compactor_model: Optional[str] = None,
         socket_path: Optional[Path] = None,
         provider_name: str = "agy",
+        sandbox: str = "none",
     ):
         self.chat_dir = Path(chat_dir or os.path.expanduser("~/.optchat")).resolve()
         self.socket_path = Path(socket_path or (self.chat_dir / "engine.sock")).resolve()
         self.compactor_model = compactor_model
         self.provider_name = provider_name
+        self.sandbox_choice = sandbox
+
+        from optchat.sandbox import SandboxManager, SandboxBackend
+        self.sandbox_backend = SandboxManager.detect_backend(sandbox)
+        self.sandbox_config = SandboxManager.create_default_config(
+            workspace=Path.cwd(),
+            backend=self.sandbox_backend,
+            optchat_dir=self.chat_dir,
+        )
 
         self.storage: Optional[Storage] = None
         self.view: Optional[LiveView] = None
@@ -109,6 +119,10 @@ class OptChatDaemon:
 
         self.view = LiveView(self.storage)
         self.view.rebuild()
+
+        from optchat.sandbox import SandboxBackend
+        if self.sandbox_backend != SandboxBackend.NONE:
+            logger.info("OptChat Daemon active with sandbox: %s", self.sandbox_backend.value)
 
         comp_provider = create_provider(
             self.provider_name,
@@ -377,6 +391,40 @@ class OptChatDaemon:
             export_html_to_file(self.storage, self.view, target)
             return {"status": "ok", "path": str(target)}
 
+        elif action == "sync_export":
+            since_idx = int(req.get("since_idx", 0))
+            from optchat.sync import export_sync_payload
+            return {"status": "ok", "payload": export_sync_payload(self.storage, since_idx)}
+
+        elif action == "sync_apply":
+            sync_payload = req.get("payload", {})
+            from optchat.sync import apply_sync_payload
+            res = apply_sync_payload(self.storage, sync_payload)
+            self.view.rebuild()
+            return res
+
+        elif action == "exec_sandboxed":
+            cmd = req.get("cmd", [])
+            ws = Path(req.get("workspace", os.getcwd()))
+            from optchat.sandbox import SandboxManager
+            cfg = SandboxManager.create_default_config(ws, backend=self.sandbox_backend, optchat_dir=self.chat_dir)
+            wrapped = SandboxManager.wrap_command(cmd, cfg)
+            env = SandboxManager.filter_env(cfg)
+            proc = await asyncio.create_subprocess_exec(
+                *wrapped,
+                env={**os.environ, **env},
+                cwd=str(ws),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            return {
+                "status": "ok",
+                "returncode": proc.returncode,
+                "stdout": stdout.decode("utf-8", errors="replace"),
+                "stderr": stderr.decode("utf-8", errors="replace"),
+            }
+
         elif action == "hook_event":
             event_name = req.get("event", "")
             payload = req.get("payload", {})
@@ -564,12 +612,14 @@ async def run_daemon(
     compactor_model: Optional[str] = None,
     socket_path: Optional[Path] = None,
     provider_name: str = "agy",
+    sandbox: str = "none",
 ) -> None:
     daemon = OptChatDaemon(
         chat_dir=chat_dir,
         compactor_model=compactor_model,
         socket_path=socket_path,
         provider_name=provider_name,
+        sandbox=sandbox,
     )
     await daemon.start()
 
