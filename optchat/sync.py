@@ -326,6 +326,8 @@ def sync_payload_over_ssh(
             f'if command -v optchat >/dev/null 2>&1; then exec optchat sync-exchange {extra_args}; '
             f'elif [ -x "$HOME/.local/bin/optchat" ]; then exec "$HOME/.local/bin/optchat" sync-exchange {extra_args}; '
             f'elif [ -x "$HOME/bin/optchat" ]; then exec "$HOME/bin/optchat" sync-exchange {extra_args}; '
+            f'elif [ -x "$HOME/src/alpeware/opt-chat/.venv/bin/optchat" ]; then exec "$HOME/src/alpeware/opt-chat/.venv/bin/optchat" sync-exchange {extra_args}; '
+            f'elif [ -x "$HOME/.venv/bin/optchat" ]; then exec "$HOME/.venv/bin/optchat" sync-exchange {extra_args}; '
             f'elif [ -x "/data/data/com.termux/files/usr/bin/optchat" ]; then exec /data/data/com.termux/files/usr/bin/optchat sync-exchange {extra_args}; '
             f'else export PATH="$HOME/.local/bin:$HOME/bin:/data/data/com.termux/files/usr/bin:$PATH"; exec optchat sync-exchange {extra_args}; fi'
         )
