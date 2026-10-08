@@ -149,7 +149,7 @@ def apply_sync_payload(storage: Storage, payload: Dict[str, Any]) -> Dict[str, A
 
         if is_strict_append:
             new_items = unified_msgs[len(storage.messages):]
-            batch = [(m.kind, m.text, m.date) for m in new_items]
+            batch = [(m.kind, m.text, m.date, m.key) for m in new_items]
             storage.append_messages_batch(batch)
             imported_msgs_count = len(new_items)
         else:
@@ -189,7 +189,7 @@ def _rewrite_storage_messages(
             pass
 
     # Re-append all unified messages
-    batch = [(m.kind, m.text, m.date) for m in unified_msgs]
+    batch = [(m.kind, m.text, m.date, m.key) for m in unified_msgs]
     storage.append_messages_batch(batch)
 
     # Invalidate tree nodes that spanned beyond first_diff_idx

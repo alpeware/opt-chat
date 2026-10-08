@@ -283,15 +283,44 @@ class Storage:
         # Load messages
         msg_entries = self._load_stream(self.main_dir)
         msg_entries.sort(key=lambda d: int(d.get("i", 0)))
+        needs_migration = False
         for d in msg_entries:
+            if "key" not in d:
+                needs_migration = True
             msg = Message.from_dict(d)
             self.messages.append(msg)
+
+        if needs_migration:
+            self._migrate_keys_to_disk()
 
         # Load tree nodes
         tree_entries = self._load_stream(self.tree_dir)
         for d in tree_entries:
             node = TreeNode.from_dict(d)
             self.tree[(node.l, node.i)] = node
+
+    def _migrate_keys_to_disk(self) -> None:
+        """Persist explicit 'key' fields to disk for legacy messages."""
+        logger.info("Migrating legacy messages to include explicit device keys on disk...")
+        files_to_messages: Dict[Path, List[Message]] = {}
+        for msg in self.messages:
+            day_str = msg.date[:10]
+            if len(day_str) == 10 and day_str[4] == "-" and day_str[7] == "-":
+                fname = f"{day_str}.jsonl"
+            else:
+                fname = self._today_filename()
+            fpath = self.main_dir / fname
+            files_to_messages.setdefault(fpath, []).append(msg)
+
+        for fpath, msgs in files_to_messages.items():
+            tmp_path = fpath.with_suffix(".tmp")
+            with open(tmp_path, "wb") as f:
+                for m in msgs:
+                    line = (json.dumps(m.to_dict(), ensure_ascii=False) + "\n").encode("utf-8")
+                    f.write(line)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, fpath)
 
     def append_message(self, kind: str, text: str) -> Message:
         """Append message to log with single write and fsync durability (§2).
@@ -321,11 +350,12 @@ class Storage:
 
     def append_messages_batch(
         self,
-        items: List[Tuple[str, str, Optional[str]]],
+        items: List[Any],
     ) -> List[Message]:
         """Append a batch of messages with durability, grouping by day file.
 
-        Each item is (kind, text, date_iso_optional).
+        Each item can be a Message object or a tuple:
+        (kind, text, date_iso_optional, key_optional).
         Thoughts (reasoning) are NEVER passed here.
         """
         if not items:
@@ -337,13 +367,24 @@ class Storage:
         now_iso_default = datetime.datetime.now().astimezone().isoformat()
         current_idx = len(self.messages)
 
-        for kind, text, date_iso in items:
+        for item in items:
+            if isinstance(item, Message):
+                kind, text = item.kind, item.text
+                msg_date = item.date
+                msg_key = item.key
+            elif len(item) == 4:
+                kind, text, date_iso, msg_key = item
+                msg_date = date_iso if date_iso else now_iso_default
+            else:
+                kind, text, date_iso = item
+                msg_date = date_iso if date_iso else now_iso_default
+                msg_key = None
+
             if kind == "echo":
                 text = cap_tool_output(text, CAP)
 
-            msg_date = date_iso if date_iso else now_iso_default
             size = len(f"{kind}: {text}".encode("utf-8"))
-            msg = Message(i=current_idx, kind=kind, text=text, size=size, date=msg_date)
+            msg = Message(i=current_idx, kind=kind, text=text, size=size, date=msg_date, key=msg_key)
             current_idx += 1
             created_msgs.append(msg)
 
