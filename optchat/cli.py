@@ -395,38 +395,69 @@ def main() -> None:
         sys.exit(ret)
 
     elif args.subcommand == "sync":
-        from optchat.sync import sync_over_ssh
-        storage = Storage(Path(args.chat_dir))
-        storage.open()
-        view = LiveView(storage)
-        view.rebuild()
+        from optchat.engine_client import EngineClient
+        from optchat.sync import sync_payload_over_ssh, export_sync_payload, apply_sync_payload
+        chat_dir = Path(args.chat_dir)
+        client = EngineClient(socket_path=chat_dir / "engine.sock")
+        use_daemon = client.is_daemon_alive()
+
         console.print(f"[cyan]Syncing memory idempotently with peer '{args.peer}' over SSH...[/cyan]")
         try:
-            res = sync_over_ssh(args.peer, storage, remote_dir=args.remote_dir)
-            view.rebuild()
-            console.print(f"[green]Sync complete! Total messages: {res['messages_count']} (+{res['imported_messages']} new, +{res['imported_nodes']} tree nodes).[/green]")
+            if use_daemon:
+                local_payload = client.sync_export()
+                remote_response = sync_payload_over_ssh(args.peer, local_payload, remote_dir=args.remote_dir)
+                res = client.sync_apply(remote_response)
+            else:
+                storage = Storage(chat_dir)
+                storage.open()
+                try:
+                    local_payload = export_sync_payload(storage)
+                    remote_response = sync_payload_over_ssh(args.peer, local_payload, remote_dir=args.remote_dir)
+                    res = apply_sync_payload(storage, remote_response)
+                finally:
+                    storage.close()
+
+            console.print(f"[green]Sync complete! Total messages: {res.get('messages_count', 0)} (+{res.get('imported_messages', 0)} new, +{res.get('imported_nodes', 0)} tree nodes).[/green]")
         except Exception as e:
             console.print(f"[red]Sync failed: {e}[/red]")
-        finally:
-            storage.close()
 
     elif args.subcommand == "sync-exchange":
+        from optchat.engine_client import EngineClient
         from optchat.sync import export_sync_payload, apply_sync_payload
-        storage = Storage(Path(args.chat_dir))
-        storage.open()
-        try:
-            input_data = sys.stdin.read()
-            if input_data.strip():
+        chat_dir = Path(args.chat_dir)
+        client = EngineClient(socket_path=chat_dir / "engine.sock")
+        use_daemon = client.is_daemon_alive()
+
+        input_data = sys.stdin.read()
+        payload = {}
+        if input_data.strip():
+            try:
+                payload = json.loads(input_data)
+            except Exception as e:
+                logger.warning("Failed to parse incoming sync payload: %s", e)
+
+        if use_daemon:
+            if payload:
                 try:
-                    payload = json.loads(input_data)
-                    apply_sync_payload(storage, payload)
+                    client.sync_apply(payload)
                 except Exception as e:
-                    logger.warning("Failed to apply incoming sync payload: %s", e)
-            response = export_sync_payload(storage)
-            sys.stdout.write(json.dumps(response) + "\n")
-            sys.stdout.flush()
-        finally:
-            storage.close()
+                    logger.warning("Daemon sync_apply failed: %s", e)
+            response = client.sync_export()
+        else:
+            storage = Storage(chat_dir)
+            storage.open()
+            try:
+                if payload:
+                    try:
+                        apply_sync_payload(storage, payload)
+                    except Exception as e:
+                        logger.warning("Storage apply_sync_payload failed: %s", e)
+                response = export_sync_payload(storage)
+            finally:
+                storage.close()
+
+        sys.stdout.write(json.dumps(response) + "\n")
+        sys.stdout.flush()
 
 
     elif args.subcommand == "hook":

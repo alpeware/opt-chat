@@ -24,12 +24,34 @@ logger = logging.getLogger("optchat.storage")
 
 
 def get_device_name() -> str:
-    """Return device identifier for multi-device synchronization."""
+    """Return device identifier for multi-device synchronization.
+
+    Checks:
+    1. Environment variable: OPTCHAT_DEVICE_NAME
+    2. Configuration file: ~/.optchat/config.json ("device_name")
+    3. Hostname fallback: socket.gethostname().split('.')[0]
+       (automatically uses 'android' if running in Termux with default localhost)
+    """
     dev = os.environ.get("OPTCHAT_DEVICE_NAME")
-    if dev:
+    if dev and dev.strip():
         return dev.strip()
+
+    cfg_path = Path(os.path.expanduser("~/.optchat/config.json"))
+    if cfg_path.is_file():
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                val = data.get("device_name")
+                if val and str(val).strip():
+                    return str(val).strip()
+        except Exception:
+            pass
+
     try:
-        return socket.gethostname().split(".")[0].strip() or "node"
+        host = socket.gethostname().split(".")[0].strip()
+        if host and host.lower() != "localhost":
+            return host
+        return "android" if os.path.exists("/data/data/com.termux") else "node"
     except Exception:
         return "node"
 

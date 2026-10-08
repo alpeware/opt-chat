@@ -179,25 +179,21 @@ def _rewrite_storage_messages(storage: Storage, unified_msgs: List[Message]) -> 
     storage.append_messages_batch(batch)
 
 
-def sync_over_ssh(
+def sync_payload_over_ssh(
     peer_host: str,
-    local_storage: Storage,
+    local_payload: Dict[str, Any],
     remote_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Execute peer-to-peer sync with a remote host over SSH."""
+    """Exchange sync JSON payload with remote peer over SSH stdio."""
     ssh_bin = shutil.which("ssh")
     if not ssh_bin:
         raise RuntimeError("SSH binary not found in PATH")
 
-    # Command to run on remote peer
-    cmd_prefix = f"optchat sync-exchange"
+    cmd_prefix = "optchat sync-exchange"
     if remote_dir:
         cmd_prefix += f" --chat-dir {remote_dir}"
 
     remote_cmd = [ssh_bin, peer_host, cmd_prefix]
-
-    # Prepare local payload
-    local_payload = export_sync_payload(local_storage)
     input_bytes = (json.dumps(local_payload) + "\n").encode("utf-8")
 
     proc = subprocess.Popen(
@@ -216,6 +212,17 @@ def sync_over_ssh(
     if not output_raw:
         raise RuntimeError("Remote peer returned empty sync response")
 
-    remote_response = json.loads(output_raw)
+    return json.loads(output_raw)
+
+
+def sync_over_ssh(
+    peer_host: str,
+    local_storage: Storage,
+    remote_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Execute peer-to-peer sync with a remote host over SSH using local storage."""
+    local_payload = export_sync_payload(local_storage)
+    remote_response = sync_payload_over_ssh(peer_host, local_payload, remote_dir=remote_dir)
     result = apply_sync_payload(local_storage, remote_response)
     return result
+

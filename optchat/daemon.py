@@ -401,6 +401,13 @@ class OptChatDaemon:
             from optchat.sync import apply_sync_payload
             res = apply_sync_payload(self.storage, sync_payload)
             self.view.rebuild()
+            if self.compactor:
+                self.compactor.pump()
+            self.broadcast(
+                "sync_applied",
+                f"Sync applied: +{res.get('imported_messages', 0)} messages, +{res.get('imported_nodes', 0)} nodes",
+                extra=res,
+            )
             return res
 
         elif action == "exec_sandboxed":

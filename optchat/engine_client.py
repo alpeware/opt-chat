@@ -169,6 +169,13 @@ class EngineClient:
     async def rebuild_async(self) -> Dict[str, Any]:
         return await self.call_async("rebuild")
 
+    def sync_export(self, since_idx: int = 0) -> Dict[str, Any]:
+        res = self.call("sync_export", timeout=30.0, since_idx=since_idx)
+        return res.get("payload", {})
+
+    def sync_apply(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self.call("sync_apply", timeout=60.0, payload=payload)
+
 
 class ProxyStorage:
     """Storage proxy delegating mutations and queries to OptChatDaemon via EngineClient."""
