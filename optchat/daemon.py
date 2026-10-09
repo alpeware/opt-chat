@@ -733,8 +733,11 @@ class OptChatDaemon:
             logger.warning("Error during stop before restart: %s", e)
 
         if getattr(self, "_skip_execv_for_test", False):
-            logger.info("Skipping execv because _skip_execv_for_test is True")
+            logger.info("In test mode: restarting daemon in-process...")
+            await asyncio.sleep(0.1)
+            await self.start()
             return
+
 
         await asyncio.sleep(0.3)
         sys.stdout.flush()

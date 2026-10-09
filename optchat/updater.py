@@ -249,16 +249,22 @@ def update_remote_peer(
         remote_script = f"{remote_bin} update {arg_str}".strip()
     else:
         remote_script = (
-            f'if command -v optchat >/dev/null 2>&1; then exec optchat update {arg_str}; '
-            f'elif [ -x "$HOME/.local/bin/optchat" ]; then exec "$HOME/.local/bin/optchat" update {arg_str}; '
-            f'elif [ -x "$HOME/bin/optchat" ]; then exec "$HOME/bin/optchat" update {arg_str}; '
-            f'elif [ -x "$HOME/src/alpeware/opt-chat/.venv/bin/optchat" ]; then exec "$HOME/src/alpeware/opt-chat/.venv/bin/optchat" update {arg_str}; '
-            f'elif [ -x "$HOME/.venv/bin/optchat" ]; then exec "$HOME/.venv/bin/optchat" update {arg_str}; '
-            f'elif [ -x "/data/data/com.termux/files/usr/bin/optchat" ]; then exec /data/data/com.termux/files/usr/bin/optchat update {arg_str}; '
-            f'else export PATH="$HOME/.local/bin:$HOME/bin:/data/data/com.termux/files/usr/bin:$PATH"; exec optchat update {arg_str}; fi'
+            'bootstrap_peer() { '
+            'for r in "$HOME/src/alpeware/opt-chat" "$HOME/opt-chat" "/data/data/com.termux/files/home/src/alpeware/opt-chat"; do '
+            'if [ -d "$r/.git" ]; then '
+            'cd "$r" && git pull --ff-only 2>&1; '
+            'if [ -x "$r/.venv/bin/uv" ]; then "$r/.venv/bin/uv" pip install -e . --no-deps >/dev/null 2>&1; '
+            'elif command -v uv >/dev/null 2>&1; then uv pip install -e . --no-deps >/dev/null 2>&1; '
+            'elif [ -x "$HOME/.venv/bin/uv" ]; then "$HOME/.venv/bin/uv" pip install -e . --no-deps >/dev/null 2>&1; '
+            'elif [ -x "$r/.venv/bin/python" ]; then "$r/.venv/bin/python" -m pip install -e . --no-deps >/dev/null 2>&1 || true; fi; '
+            'break; fi; done; }; '
+            'export PATH="$HOME/.local/bin:$HOME/bin:$HOME/src/alpeware/opt-chat/.venv/bin:$HOME/.venv/bin:/data/data/com.termux/files/usr/bin:$PATH"; '
+            'if ! optchat update --help >/dev/null 2>&1; then bootstrap_peer; fi; '
+            f'exec optchat update {arg_str}'
         )
 
     remote_cmd = [ssh_bin, peer_host, remote_script]
+
     try:
         proc = subprocess.run(remote_cmd, capture_output=True, text=True, timeout=60.0)
         output = proc.stdout.strip()
