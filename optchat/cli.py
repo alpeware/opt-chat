@@ -432,6 +432,7 @@ def main() -> None:
             sync_payload_over_ssh,
             export_sync_payload,
             apply_sync_payload,
+            calculate_scatter_peers,
             get_configured_peers,
             get_ssh_config_hosts,
         )
@@ -454,33 +455,61 @@ def main() -> None:
         client = EngineClient(socket_path=chat_dir / "engine.sock")
         use_daemon = client.is_daemon_alive()
 
-        for peer in peers_to_sync:
-            console.print(f"[cyan]Syncing memory idempotently with peer '{peer}' over SSH...[/cyan]")
-            try:
-                if use_daemon:
-                    local_payload = client.sync_export()
+        def _sync_single_peer(peer: str) -> dict:
+            if use_daemon:
+                local_payload = client.sync_export()
+                remote_response = sync_payload_over_ssh(
+                    peer, local_payload, remote_dir=args.remote_dir, remote_bin=args.remote_bin
+                )
+                res = client.sync_apply(remote_response)
+            else:
+                storage = Storage(chat_dir)
+                storage.open()
+                try:
+                    local_payload = export_sync_payload(storage)
                     remote_response = sync_payload_over_ssh(
                         peer, local_payload, remote_dir=args.remote_dir, remote_bin=args.remote_bin
                     )
-                    res = client.sync_apply(remote_response)
-                else:
-                    storage = Storage(chat_dir)
-                    storage.open()
-                    try:
-                        local_payload = export_sync_payload(storage)
-                        remote_response = sync_payload_over_ssh(
-                            peer, local_payload, remote_dir=args.remote_dir, remote_bin=args.remote_bin
-                        )
-                        res = apply_sync_payload(storage, remote_response)
-                    finally:
-                        storage.close()
+                    res = apply_sync_payload(storage, remote_response)
+                finally:
+                    storage.close()
 
-                if res.get("status") == "error":
-                    raise RuntimeError(res.get("error", "Unknown error applying sync"))
+            if res.get("status") == "error":
+                raise RuntimeError(res.get("error", "Unknown error applying sync"))
+            return res
 
-                console.print(f"[green]Sync with '{peer}' complete! Total messages: {res.get('messages_count', 0)} (+{res.get('imported_messages', 0)} new, +{res.get('imported_nodes', 0)} tree nodes).[/green]")
+        last_producer_idx = -1
+        successful_peers: Set[str] = set()
+
+        # Phase 1: Gather (visit all requested peers)
+        for idx, peer in enumerate(peers_to_sync):
+            console.print(f"[cyan]Syncing memory idempotently with peer '{peer}' over SSH...[/cyan]")
+            try:
+                res = _sync_single_peer(peer)
+                successful_peers.add(peer)
+                imported = res.get("imported_messages", 0)
+                if imported > 0:
+                    last_producer_idx = idx
+                console.print(f"[green]Sync with '{peer}' complete! Total messages: {res.get('messages_count', 0)} (+{imported} new, +{res.get('imported_nodes', 0)} tree nodes).[/green]")
             except Exception as e:
                 console.print(f"[red]Sync with '{peer}' failed: {e}[/red]")
+
+        # Phase 2: Scatter / Convergence
+        # If any peer after the first introduced new messages, earlier peers missed those updates.
+        # A second pass to earlier peers guarantees 100% cluster convergence in at most 2 rounds.
+        scatter_peers = calculate_scatter_peers(peers_to_sync, last_producer_idx, successful_peers)
+        if scatter_peers:
+            console.print(f"\n[bold cyan]Convergence Pass (Scatter):[/bold cyan] Propagating updates to earlier peers: {', '.join(scatter_peers)}...")
+            for peer in scatter_peers:
+                try:
+                    res = _sync_single_peer(peer)
+                    console.print(f"[green]Propagated to '{peer}'! Total messages: {res.get('messages_count', 0)} (+{res.get('imported_messages', 0)} new, +{res.get('imported_nodes', 0)} tree nodes).[/green]")
+                except Exception as e:
+                    console.print(f"[red]Convergence propagation to '{peer}' failed: {e}[/red]")
+
+        if len(peers_to_sync) > 1 and successful_peers:
+            console.print("\n[bold green]Cluster convergence complete! All online peers are synchronized.[/bold green]")
+
 
     elif args.subcommand == "sync-exchange":
         from optchat.engine_client import EngineClient

@@ -182,3 +182,108 @@ def test_peer_discovery_and_ssh_hosts(tmp_path: Path, monkeypatch):
     assert "phone" in hosts
     assert "laptop" in hosts
     assert "*" not in hosts
+
+
+def test_calculate_scatter_peers():
+    from optchat.sync import calculate_scatter_peers
+
+    peers = ["laptop", "phone", "tablet"]
+
+    # 1. No new messages imported during Round 1 -> 0 scatter peers
+    assert calculate_scatter_peers(peers, -1) == []
+
+    # 2. Only first peer produced messages -> 0 scatter peers (peers visited after already get updates)
+    assert calculate_scatter_peers(peers, 0) == []
+
+    # 3. Second peer produced messages -> peer 0 missed it
+    assert calculate_scatter_peers(peers, 1) == ["laptop"]
+
+    # 4. Third peer produced messages -> peers 0 and 1 missed it
+    assert calculate_scatter_peers(peers, 2) == ["laptop", "phone"]
+
+    # 5. With successful_peers filter (e.g. laptop failed/offline in round 1)
+    assert calculate_scatter_peers(peers, 2, successful_peers={"phone", "tablet"}) == ["phone"]
+
+
+def test_two_phase_gather_scatter_convergence(tmp_path: Path):
+    """Simulate a star-topology cluster: Hub (Desktop), Peer 1 (Laptop), Peer 2 (Phone).
+    
+    Verifies that when Phone adds a message, a two-phase Gather-Scatter sync
+    ensures Laptop also receives Phone's message in the same sync invocation.
+    """
+    from optchat.sync import calculate_scatter_peers
+
+    hub_store = Storage(tmp_path / "hub")
+    laptop_store = Storage(tmp_path / "laptop")
+    phone_store = Storage(tmp_path / "phone")
+
+    hub_store.open()
+    laptop_store.open()
+    phone_store.open()
+
+    # Initial synchronized state: 1 shared message
+    hub_store.append_message("user", "Hello world from desktop")
+    laptop_store.append_messages_batch(hub_store.messages)
+    phone_store.append_messages_batch(hub_store.messages)
+
+    # Phone kicks off a subagent: adds a new message
+    phone_store.append_message("user", "[agent-phone] Subagent task complete on Pixel")
+    assert len(phone_store.messages) == 2
+    assert len(hub_store.messages) == 1
+    assert len(laptop_store.messages) == 1
+
+    # Simulate Hub running `optchat sync --all` with peers = ["laptop", "phone"]
+    peers = ["laptop", "phone"]
+    stores = {"laptop": laptop_store, "phone": phone_store}
+
+    last_producer_idx = -1
+    successful_peers = set()
+
+    # --- Phase 1: Gather ---
+    for idx, peer in enumerate(peers):
+        peer_store = stores[peer]
+        # Simulate bidirectional exchange
+        hub_payload = export_sync_payload(hub_store)
+        res_peer = apply_sync_payload(peer_store, hub_payload)
+        peer_payload = export_sync_payload(peer_store)
+        res_hub = apply_sync_payload(hub_store, peer_payload)
+
+        successful_peers.add(peer)
+        if res_hub.get("imported_messages", 0) > 0:
+            last_producer_idx = idx
+
+    # Verify state after Phase 1:
+    # Hub has both messages, Phone has both messages, but Laptop is STILL BEHIND!
+    assert len(hub_store.messages) == 2
+    assert len(phone_store.messages) == 2
+    assert len(laptop_store.messages) == 1  # Behind!
+    assert last_producer_idx == 1  # Phone (index 1) produced new messages
+
+    # --- Phase 2: Scatter ---
+    scatter_peers = calculate_scatter_peers(peers, last_producer_idx, successful_peers)
+    assert scatter_peers == ["laptop"]
+
+    for peer in scatter_peers:
+        peer_store = stores[peer]
+        hub_payload = export_sync_payload(hub_store)
+        apply_sync_payload(peer_store, hub_payload)
+        peer_payload = export_sync_payload(peer_store)
+        apply_sync_payload(hub_store, peer_payload)
+
+    # Verify cluster convergence after Phase 2:
+    # All 3 nodes have converged to 2 messages with identical keys!
+    assert len(laptop_store.messages) == 2
+    assert len(hub_store.messages) == 2
+    assert len(phone_store.messages) == 2
+
+    hub_keys = [m.key for m in hub_store.messages]
+    laptop_keys = [m.key for m in laptop_store.messages]
+    phone_keys = [m.key for m in phone_store.messages]
+
+    assert laptop_keys == hub_keys
+    assert phone_keys == hub_keys
+
+    hub_store.close()
+    laptop_store.close()
+    phone_store.close()
+

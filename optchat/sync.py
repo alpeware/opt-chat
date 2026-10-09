@@ -368,3 +368,23 @@ def sync_over_ssh(
     result = apply_sync_payload(local_storage, remote_response)
     return result
 
+
+def calculate_scatter_peers(
+    peers: List[str],
+    last_producer_idx: int,
+    successful_peers: Optional[Set[str]] = None,
+) -> List[str]:
+    """Calculate the minimal subset of peers requiring a Round 2 (Scatter) pass for full convergence.
+
+    In a star topology, if peer at index `last_producer_idx` introduced new messages,
+    all peers visited prior to `last_producer_idx` missed those updates.
+    Peers visited at or after `last_producer_idx` already received the full state in Round 1.
+    """
+    if last_producer_idx <= 0:
+        return []
+    earlier = peers[:last_producer_idx]
+    if successful_peers is not None:
+        return [p for p in earlier if p in successful_peers]
+    return earlier
+
+
