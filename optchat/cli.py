@@ -195,6 +195,19 @@ def main() -> None:
     daemon_parser.add_argument("--socket-path", default=None, help="Unix domain socket path (default: <chat-dir>/engine.sock)")
     daemon_parser.add_argument("--provider", default="agy", choices=["agy", "mock"], help="LLM Provider for compactor (default: agy)")
     daemon_parser.add_argument("--sandbox", default="none", choices=["auto", "bwrap", "proot", "unshare", "none"], help="Sandbox isolation for daemon and child agy invocations (default: none)")
+    daemon_parser.add_argument("--web", action="store_true", help="Supervise responsive mobile/desktop web server as child subprocess")
+    daemon_parser.add_argument("--web-host", default="0.0.0.0", help="Host interface for managed web server (default: 0.0.0.0)")
+    daemon_parser.add_argument("--web-port", type=int, default=8765, help="Port for managed web server (default: 8765)")
+    daemon_parser.add_argument("--workspace", default=None, help="Workspace directory for web server / agy execution")
+
+    # update command
+    update_parser = subparsers.add_parser("update", help="Self-update optchat via git pull, reinstall package, and restart daemon & web server")
+    update_parser.add_argument("--all", action="store_true", help="Update entire cluster: local node and all peers in config.json over SSH")
+    update_parser.add_argument("--peer", default=None, help="Update a specific remote peer node over SSH")
+    update_parser.add_argument("--from-peer", default=None, help="Pull updates directly from a peer over SSH instead of origin (GitHub)")
+    update_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+    update_parser.add_argument("--restart-only", action="store_true", help="Skip git pull and only restart daemon and supervised web server")
+    update_parser.add_argument("--no-restart", action="store_true", help="Pull and reinstall without restarting the daemon")
 
     # exec command
     exec_parser = subparsers.add_parser("exec", help="Run a command (e.g. agy) inside the OptChat sandbox")
@@ -213,6 +226,7 @@ def main() -> None:
     # sync-exchange command (internal stdio for SSH sync)
     sync_exchange_parser = subparsers.add_parser("sync-exchange", help="Internal SSH stdio handler for peer sync")
     sync_exchange_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+
 
     # hook command
     hook_parser = subparsers.add_parser("hook", help="Execute Antigravity lifecycle hook")
@@ -399,6 +413,7 @@ def main() -> None:
     elif args.subcommand == "daemon":
         from optchat.daemon import run_daemon
         socket_path = Path(args.socket_path) if args.socket_path else None
+        ws = Path(args.workspace) if getattr(args, "workspace", None) else None
         asyncio.run(
             run_daemon(
                 chat_dir=Path(args.chat_dir),
@@ -406,8 +421,13 @@ def main() -> None:
                 socket_path=socket_path,
                 provider_name=args.provider,
                 sandbox=args.sandbox,
+                enable_web=getattr(args, "web", False),
+                web_host=getattr(args, "web_host", "0.0.0.0"),
+                web_port=getattr(args, "web_port", 8765),
+                workspace=ws,
             )
         )
+
 
     elif args.subcommand == "exec":
         import subprocess
@@ -549,8 +569,74 @@ def main() -> None:
         sys.stdout.write(json.dumps(response) + "\n")
         sys.stdout.flush()
 
+    elif args.subcommand == "update":
+        from optchat.updater import update_local, update_remote_peer
+        from optchat.sync import get_configured_peers
+        from optchat.storage import get_device_name
+
+        chat_dir = Path(args.chat_dir)
+        local_device = get_device_name(chat_dir)
+
+        # 1. Update a single specified remote peer if requested
+        if args.peer:
+            console.print(f"[cyan]Updating remote peer '{args.peer}' over SSH...[/cyan]")
+            res = update_remote_peer(args.peer, remote_dir=args.chat_dir)
+            if res.get("status") == "ok":
+                console.print(f"[green]Peer '{args.peer}' updated successfully:[/green]\n{res.get('output', '')}")
+            else:
+                console.print(f"[red]Peer '{args.peer}' update failed: {res.get('error', 'Unknown error')}[/red]")
+            return
+
+        # 2. Update local node
+        console.print(f"[cyan]Updating local node '{local_device}'...[/cyan]")
+        res = update_local(
+            chat_dir=chat_dir,
+            from_peer=getattr(args, "from_peer", None),
+            no_restart=getattr(args, "no_restart", False),
+            restart_only=getattr(args, "restart_only", False),
+        )
+
+        if res.get("status") != "ok":
+            console.print(f"[red]Update failed: {res.get('error', 'Unknown error')}[/red]")
+            return
+
+        if res.get("updated"):
+            console.print(f"[bold green]Updated to commit {res.get('commit')} (from {res.get('previous_commit')}).[/bold green]")
+        else:
+            console.print(f"[green]Already up to date at commit {res.get('commit')}.[/green]")
+
+        if res.get("daemon_restarted"):
+            console.print("[green]Daemon and managed services successfully restarted.[/green]")
+        elif getattr(args, "restart_only", False):
+            console.print(f"[yellow]{res.get('message', '')}[/yellow]")
+
+        # 3. If --all, orchestrate update across all configured peers
+        if getattr(args, "all", False):
+            peers = get_configured_peers(chat_dir)
+            if not peers:
+                console.print("[yellow]No peers configured in config.json to update.[/yellow]")
+            else:
+                console.print(f"\n[bold cyan]Orchestrating cluster-wide update across peers: {', '.join(peers)}...[/bold cyan]")
+                for peer in peers:
+                    console.print(f"[cyan]Updating peer '{peer}' over SSH...[/cyan]")
+                    peer_res = update_remote_peer(
+                        peer,
+                        remote_dir=str(chat_dir),
+                        from_local=False,
+                        local_host_alias=local_device,
+                    )
+                    if peer_res.get("status") == "ok":
+                        console.print(f"[green]Peer '{peer}' updated successfully![/green]")
+                        if peer_res.get("output"):
+                            for l in peer_res["output"].splitlines():
+                                console.print(f"  [dim]{l}[/dim]")
+                    else:
+                        console.print(f"[red]Peer '{peer}' update failed: {peer_res.get('error', 'Unknown error')}[/red]")
+
+                console.print("\n[bold green]Cluster update complete![/bold green]")
 
     elif args.subcommand == "hook":
+
         from optchat.hooks import handle_hook_command
         handle_hook_command(args.event)
 

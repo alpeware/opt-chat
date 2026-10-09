@@ -79,12 +79,23 @@ class OptChatDaemon:
         socket_path: Optional[Path] = None,
         provider_name: str = "agy",
         sandbox: str = "none",
+        enable_web: bool = False,
+        web_port: int = 8765,
+        web_host: str = "0.0.0.0",
+        workspace: Optional[Path] = None,
     ):
         self.chat_dir = Path(chat_dir or os.path.expanduser("~/.optchat")).resolve()
         self.socket_path = Path(socket_path or (self.chat_dir / "engine.sock")).resolve()
         self.compactor_model = compactor_model
         self.provider_name = provider_name
         self.sandbox_choice = sandbox
+        self.enable_web = enable_web
+        self.web_port = web_port
+        self.web_host = web_host
+        self.workspace = Path(workspace).resolve() if workspace else None
+        self.web_process: Optional[asyncio.subprocess.Process] = None
+        self._web_monitor_task: Optional[asyncio.Task] = None
+        self._skip_execv_for_test: bool = False
 
         from optchat.sandbox import SandboxManager, SandboxBackend
         self.sandbox_backend = SandboxManager.detect_backend(sandbox)
@@ -110,6 +121,58 @@ class OptChatDaemon:
                 q.put_nowait(evt)
             except Exception:
                 pass
+
+    async def _start_web_server(self) -> None:
+        """Start the responsive web interface as a managed child subprocess."""
+        cmd = [
+            sys.executable,
+            "-m",
+            "optchat.cli",
+            "web",
+            "--host",
+            self.web_host,
+            "--port",
+            str(self.web_port),
+            "--chat-dir",
+            str(self.chat_dir),
+            "--provider",
+            self.provider_name,
+        ]
+        if self.workspace:
+            cmd.extend(["--workspace", str(self.workspace)])
+        if self.compactor_model:
+            cmd.extend(["--compactor-model", str(self.compactor_model)])
+
+        logger.info("Starting managed web server subprocess on %s:%d: %s", self.web_host, self.web_port, " ".join(cmd))
+        try:
+            self.web_process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=None,
+                stderr=None,
+            )
+            logger.info("Managed web server started with PID %d", self.web_process.pid)
+            self._web_monitor_task = asyncio.create_task(self._monitor_web_server())
+        except Exception as e:
+            logger.error("Failed to start managed web server subprocess: %s", e)
+
+    async def _monitor_web_server(self) -> None:
+        """Monitor the web server subprocess and respawn if it unexpectedly exits."""
+        while self._running and self.web_process:
+            try:
+                ret = await self.web_process.wait()
+                if not self._running:
+                    break
+                logger.warning("Managed web server (PID %s) exited unexpectedly with code %s", getattr(self.web_process, "pid", None), ret)
+                await asyncio.sleep(2.0)
+                if self._running and self.enable_web:
+                    logger.info("Respawning managed web server...")
+                    await self._start_web_server()
+                break
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("Error monitoring web server: %s", e)
+                break
 
     async def start(self) -> None:
         """Start the storage, compactor, and IPC socket server."""
@@ -147,9 +210,36 @@ class OptChatDaemon:
         self._running = True
         logger.info("OptChat Daemon listening on %s", self.socket_path)
 
+        if self.enable_web:
+            await self._start_web_server()
+
     async def stop(self) -> None:
-        """Clean shutdown of IPC server, compactor, and storage."""
+        """Clean shutdown of IPC server, compactor, web server, and storage."""
         self._running = False
+        if self._web_monitor_task and not self._web_monitor_task.done():
+            self._web_monitor_task.cancel()
+            try:
+                await self._web_monitor_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._web_monitor_task = None
+
+        if self.web_process:
+            try:
+                if self.web_process.returncode is None:
+                    logger.info("Stopping managed web server (PID %d)...", self.web_process.pid)
+                    self.web_process.terminate()
+                    try:
+                        await asyncio.wait_for(self.web_process.wait(), timeout=3.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("Web server did not terminate in time, killing...")
+                        self.web_process.kill()
+                        await self.web_process.wait()
+            except Exception as e:
+                logger.warning("Error stopping web server: %s", e)
+            finally:
+                self.web_process = None
+
         if self.server:
             self.server.close()
             await self.server.wait_closed()
@@ -170,6 +260,7 @@ class OptChatDaemon:
             self.storage = None
 
         logger.info("OptChat Daemon stopped.")
+
 
     def start_in_thread(self) -> None:
         """Start daemon in a background thread (ideal for in-process testing and embedding)."""
@@ -284,6 +375,15 @@ class OptChatDaemon:
 
         elif action == "get_state":
             size = self.view.compute_size()
+            web_info = None
+            if self.enable_web:
+                web_info = {
+                    "enabled": True,
+                    "host": self.web_host,
+                    "port": self.web_port,
+                    "running": self.web_process is not None and self.web_process.returncode is None,
+                    "pid": self.web_process.pid if self.web_process else None,
+                }
             return {
                 "status": "ok",
                 "messages_count": len(self.storage.messages),
@@ -291,7 +391,18 @@ class OptChatDaemon:
                 "view_size": size,
                 "view_budget": self.view.budget,
                 "is_settled": self.view.is_settled(),
+                "web_server": web_info,
             }
+
+        elif action == "restart":
+            logger.info("Daemon received restart request via IPC.")
+            try:
+                loop = asyncio.get_running_loop()
+                loop.call_later(0.1, lambda: asyncio.create_task(self._perform_restart()))
+            except Exception as e:
+                logger.warning("Failed scheduling restart: %s", e)
+            return {"status": "ok", "message": "Daemon restart scheduled."}
+
 
         elif action == "get_view":
             return {
@@ -613,6 +724,23 @@ class OptChatDaemon:
 
         return {"status": "ok"}
 
+    async def _perform_restart(self) -> None:
+        """Clean shutdown and re-exec the daemon process."""
+        logger.info("Performing daemon re-exec restart...")
+        try:
+            await self.stop()
+        except Exception as e:
+            logger.warning("Error during stop before restart: %s", e)
+
+        if getattr(self, "_skip_execv_for_test", False):
+            logger.info("Skipping execv because _skip_execv_for_test is True")
+            return
+
+        await asyncio.sleep(0.3)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
 
 async def run_daemon(
     chat_dir: Optional[Path] = None,
@@ -620,6 +748,10 @@ async def run_daemon(
     socket_path: Optional[Path] = None,
     provider_name: str = "agy",
     sandbox: str = "none",
+    enable_web: bool = False,
+    web_host: str = "0.0.0.0",
+    web_port: int = 8765,
+    workspace: Optional[Path] = None,
 ) -> None:
     daemon = OptChatDaemon(
         chat_dir=chat_dir,
@@ -627,6 +759,10 @@ async def run_daemon(
         socket_path=socket_path,
         provider_name=provider_name,
         sandbox=sandbox,
+        enable_web=enable_web,
+        web_host=web_host,
+        web_port=web_port,
+        workspace=workspace,
     )
     await daemon.start()
 
@@ -638,11 +774,15 @@ async def run_daemon(
         except NotImplementedError:
             pass
 
-    print(f"OptChat Daemon running [chat_dir={daemon.chat_dir}, socket={daemon.socket_path}]")
+    status_str = f"OptChat Daemon running [chat_dir={daemon.chat_dir}, socket={daemon.socket_path}]"
+    if enable_web:
+        status_str += f" [web=http://{web_host}:{web_port}]"
+    print(status_str)
     try:
         await stop_event.wait()
     finally:
         await daemon.stop()
+
 
 
 def main() -> None:

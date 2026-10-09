@@ -42,7 +42,26 @@ class EngineClient:
         except Exception:
             return False
 
+    def restart(self, timeout: float = 5.0) -> Dict[str, Any]:
+        """Request daemon to restart itself and any supervised subprocesses."""
+        return self.call("restart", timeout=timeout)
+
+    async def restart_async(self, timeout: float = 5.0) -> Dict[str, Any]:
+        """Asynchronously request daemon to restart."""
+        return await self.call_async("restart", timeout=timeout)
+
+    def wait_for_daemon(self, timeout: float = 10.0, poll_interval: float = 0.2) -> bool:
+        """Poll until daemon is alive and responding, up to timeout seconds."""
+        import time
+        start = time.time()
+        while time.time() - start < timeout:
+            if self.is_daemon_alive(timeout=min(poll_interval, 0.5)):
+                return True
+            time.sleep(poll_interval)
+        return False
+
     def call(self, action: str, timeout: float = 5.0, **kwargs) -> Dict[str, Any]:
+
         """Synchronous IPC request to daemon (fast, sub-millisecond)."""
         if not self.socket_path.exists():
             raise ConnectionError(f"OptChat daemon is not running (socket not found at {self.socket_path})")
