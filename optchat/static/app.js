@@ -90,6 +90,7 @@ function handleStreamEvent(event) {
     currentAssistantBubble.innerHTML = renderBubbleContent('talk', currentStreamedText);
     const row = currentAssistantBubble.closest('.message-row');
     if (row) {
+      row.setAttribute('data-raw-text', currentStreamedText.trim());
       let timeEl = row.querySelector('.message-time');
       if (!timeEl) {
         const header = row.querySelector('.message-header');
@@ -174,10 +175,11 @@ function handleStreamEvent(event) {
     }
   } else if (event.type === 'new_message') {
     const kind = (event.extra && event.extra.kind) || 'talk';
-    const text = event.content;
+    const text = (event.content || '').trim();
     const date = (event.extra && event.extra.date) || new Date().toISOString();
     const ws = (event.extra && event.extra.workspace);
     const dev = (event.extra && event.extra.device);
+    const msgId = (event.extra && event.extra.i);
     const wsMatch = (!selectedWorkspace || selectedWorkspace === 'all' || (ws && ws.toLowerCase() === selectedWorkspace.toLowerCase()));
     let catMatch = true;
     if (selectedCategory && selectedCategory !== 'all') {
@@ -185,8 +187,50 @@ function handleStreamEvent(event) {
       else if (selectedCategory === 'subagent') catMatch = (kind === 'work');
       else if (selectedCategory === 'note') catMatch = (kind === 'note');
     }
+
+    // Deduplication check: reconcile against existing optimistic or streamed bubbles
+    const stream = document.getElementById('chat-stream');
+    let matchedRow = null;
+    if (stream) {
+      const rows = stream.querySelectorAll('.message-row');
+      // 1. If this exact message ID is already rendered, ignore completely
+      if (msgId !== undefined && msgId !== null) {
+        for (let idx = rows.length - 1; idx >= Math.max(0, rows.length - 15); idx--) {
+          if (rows[idx].getAttribute('data-msg-id') === String(msgId)) {
+            fetchState();
+            return;
+          }
+        }
+      }
+      // 2. Check for an unconfirmed local row with matching text
+      for (let idx = rows.length - 1; idx >= Math.max(0, rows.length - 8); idx--) {
+        const r = rows[idx];
+        const rText = r.getAttribute('data-raw-text');
+        const rId = r.getAttribute('data-msg-id');
+        if (!rId && rText && (rText === text || (text && rText.includes(text.slice(0, 100))))) {
+          matchedRow = r;
+          break;
+        }
+      }
+    }
+
+    if (matchedRow) {
+      if (msgId !== undefined && msgId !== null) matchedRow.setAttribute('data-msg-id', String(msgId));
+      enrichMessageRow(matchedRow, kind, ws, dev, date);
+      scrollToBottom();
+      fetchState();
+      return;
+    }
+
     if (wsMatch && catMatch) {
-      appendMessage(kind, text, date, false, null, ws, dev);
+      const newBubble = appendMessage(kind, text, date, false, null, ws, dev);
+      if (newBubble) {
+        const r = newBubble.closest('.message-row');
+        if (r) {
+          r.setAttribute('data-raw-text', text);
+          if (msgId !== undefined && msgId !== null) r.setAttribute('data-msg-id', String(msgId));
+        }
+      }
       scrollToBottom();
     }
     fetchState();
@@ -194,6 +238,8 @@ function handleStreamEvent(event) {
     if (currentAssistantBubble) {
       if (currentStreamedText) {
         currentAssistantBubble.innerHTML = renderBubbleContent('talk', currentStreamedText);
+        const row = currentAssistantBubble.closest('.message-row');
+        if (row) row.setAttribute('data-raw-text', currentStreamedText.trim());
       }
       currentAssistantBubble = null;
       currentStreamedText = '';
@@ -382,7 +428,14 @@ async function fetchHistory() {
       } catch (_) {}
 
       msgs.forEach((m) => {
-        appendMessage(m.kind, m.text, m.date, false, null, m.workspace, m.device);
+        const b = appendMessage(m.kind, m.text, m.date, false, null, m.workspace, m.device);
+        if (b && m.i !== undefined) {
+          const r = b.closest('.message-row');
+          if (r) {
+            r.setAttribute('data-msg-id', String(m.i));
+            r.setAttribute('data-raw-text', (m.text || '').trim());
+          }
+        }
       });
       scrollToBottom();
     }
@@ -667,12 +720,53 @@ function renderBubbleContent(kind, text, threadId = null) {
   `;
 }
 
+function enrichMessageRow(row, kind, ws, dev, date) {
+  let header = row.querySelector('.message-header');
+  if (!header) return;
+
+  if (ws && !header.querySelector('.message-workspace-badge')) {
+    const wsBadge = document.createElement('span');
+    wsBadge.className = 'message-workspace-badge';
+    wsBadge.textContent = '🏷️ ' + ws;
+    wsBadge.title = 'Click to filter by workspace: ' + ws;
+    wsBadge.onclick = (e) => {
+      e.stopPropagation();
+      setWorkspaceFilter(ws);
+    };
+    header.appendChild(wsBadge);
+  }
+
+  if (dev && !header.querySelector('.message-device-badge')) {
+    const devBadge = document.createElement('span');
+    devBadge.className = 'message-device-badge';
+    const devLower = dev.toLowerCase();
+    const devIcon = (devLower.includes('pixel') || devLower.includes('phone') || devLower.includes('android')) ? '📱 ' : '💻 ';
+    devBadge.textContent = devIcon + dev;
+    devBadge.title = 'Device: ' + dev;
+    header.appendChild(devBadge);
+  }
+
+  if (date) {
+    let timeEl = header.querySelector('.message-time');
+    if (!timeEl) {
+      timeEl = document.createElement('span');
+      timeEl.className = 'message-time';
+      header.appendChild(timeEl);
+    }
+    timeEl.textContent = formatTimestamp(date);
+    timeEl.title = date;
+  }
+}
+
 function appendMessage(kind, text, dateStr, isStreaming = false, threadId = null, workspace = null, device = null) {
   const stream = document.getElementById('chat-stream');
   if (!stream) return null;
 
   const row = document.createElement('div');
   row.className = `message-row ${kind}`;
+  if (text) {
+    row.setAttribute('data-raw-text', text.trim());
+  }
 
   const header = document.createElement('div');
   header.className = 'message-header';
@@ -1004,7 +1098,11 @@ async function sendMessage() {
   setAppHeight();
 
   // Show user message immediately in chat
-  appendMessage('user', text, new Date().toISOString());
+  const userBubble = appendMessage('user', text, new Date().toISOString());
+  if (userBubble) {
+    const uRow = userBubble.closest('.message-row');
+    if (uRow) uRow.setAttribute('data-raw-text', text.trim());
+  }
 
   // Create a pending assistant bubble that will receive stream events
   const bubble = appendMessage('talk', '', new Date().toISOString(), true);
