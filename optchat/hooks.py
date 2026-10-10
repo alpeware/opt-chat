@@ -85,7 +85,7 @@ def handle_hook_command(event_name: str) -> None:
             if tpath_str and os.path.isfile(tpath_str):
                 try:
                     with open(tpath_str, "r", encoding="utf-8", errors="ignore") as f:
-                        for line in f:
+                        for line in reversed(f.readlines()):
                             s = line.strip()
                             if not s:
                                 continue
