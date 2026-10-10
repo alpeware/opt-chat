@@ -1123,8 +1123,26 @@ function formatMarkdown(text) {
   escaped = escaped.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
   escaped = escaped.replace(/\*([^\*]+)\*/g, '<em>$1</em>');
 
+  // Markdown file links: [title](file:///path/to/file)
+  escaped = escaped.replace(/\[([^\]]+)\]\(file:\/\/([^\)]+)\)/g, (match, title, path) => {
+    let cleanPath = path.trim();
+    if (!cleanPath.startsWith('/')) cleanPath = '/' + cleanPath;
+    const url = `/api/file?path=${encodeURIComponent(cleanPath)}`;
+    return `<a href="${url}" target="_blank" class="file-link" style="color: #38bdf8; text-decoration: underline; text-underline-offset: 3px;">📄 ${title}</a>`;
+  });
+
   // Markdown links: [title](url)
   escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g, '<a href="$2" target="_blank" style="color: var(--accent); text-decoration: underline;">$1</a>');
+
+  // Plain file:/// links
+  escaped = escaped.replace(/(^|[^"'>])(file:\/\/\/?[^\s<]+)/g, (match, prefix, fullUrl) => {
+    let cleanPath = fullUrl.replace(/^file:\/\//, '').trim();
+    cleanPath = cleanPath.replace(/[\.,;:!\)]+$/, '');
+    if (!cleanPath.startsWith('/')) cleanPath = '/' + cleanPath;
+    const url = `/api/file?path=${encodeURIComponent(cleanPath)}`;
+    const filename = cleanPath.split('/').filter(Boolean).pop() || cleanPath;
+    return `${prefix}<a href="${url}" target="_blank" class="file-link" style="color: #38bdf8; text-decoration: underline; text-underline-offset: 3px;">📄 ${filename}</a>`;
+  });
 
   // Plain URLs
   escaped = escaped.replace(/(^|[^"'>])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" style="color: var(--accent);">$2</a>');

@@ -183,6 +183,7 @@ class OptChatWebServer:
         self.app.router.add_post("/api/command", self.handle_api_command)
         self.app.router.add_post("/api/zoom", self.handle_api_zoom)
         self.app.router.add_post("/api/voice", self.handle_api_voice)
+        self.app.router.add_get("/api/file", self.handle_api_file)
         self.app.router.add_get("/mcp", self.handle_mcp_get)
         self.app.router.add_post("/mcp", self.handle_mcp_post)
 
@@ -250,6 +251,228 @@ class OptChatWebServer:
         if browse_file.exists():
             return web.FileResponse(browse_file)
         return web.Response(text="browse.html not available yet", status=404)
+
+    async def handle_api_file(self, request: web.Request) -> web.Response:
+        """Serve file or directory content over HTTP for mobile/web browsing."""
+        import urllib.parse
+        import html as html_lib
+
+        raw_path = request.query.get("path", "").strip()
+        if not raw_path:
+            return web.Response(text="Missing ?path= parameter", status=400)
+
+        clean_path_str = urllib.parse.unquote(raw_path)
+        if clean_path_str.startswith("file://"):
+            clean_path_str = clean_path_str[7:]
+
+        target = Path(clean_path_str).expanduser().resolve()
+
+        # Security check: Ensure target exists and is within allowed roots ($HOME, /tmp)
+        home = Path.home().resolve()
+        if not str(target).startswith(str(home)) and not str(target).startswith("/tmp"):
+            return web.Response(text="Access denied: path outside user home", status=403)
+
+        if not target.exists():
+            return web.Response(
+                text=f"<!DOCTYPE html><html><head><title>404 Not Found</title><meta name='viewport' content='width=device-width, initial-scale=1'><style>body{{font-family:sans-serif;background:#0f172a;color:#f8fafc;padding:2rem;}}a{{color:#38bdf8;}}</style></head><body><h2>File or Directory Not Found</h2><p><code>{target}</code> does not exist.</p><p><a href='/'>← Back to OptChat</a></p></body></html>",
+                content_type="text/html",
+                status=404,
+            )
+
+        # Directory listing
+        if target.is_dir():
+            try:
+                entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            except Exception as e:
+                return web.Response(text=f"Cannot list directory: {e}", status=500)
+
+            # Build breadcrumbs
+            parts = target.parts
+            crumbs = []
+            accum = Path(parts[0])
+            for p in parts[1:]:
+                accum = accum / p
+                crumbs.append(f"<a href='/api/file?path={urllib.parse.quote(str(accum))}' style='color:#38bdf8;text-decoration:none;'>{p}</a>")
+            crumb_html = " / ".join(crumbs)
+
+            parent_link = ""
+            if target != target.parent and str(target.parent).startswith(str(home)):
+                parent_link = f"<div style='margin-bottom:12px;'><a href='/api/file?path={urllib.parse.quote(str(target.parent))}' style='color:#94a3b8;text-decoration:none;'>📁 <b>.. (Parent Directory)</b></a></div>"
+
+            items_html = []
+            for item in entries:
+                try:
+                    is_d = item.is_dir()
+                    name = item.name + ("/" if is_d else "")
+                    icon = "📁" if is_d else "📄"
+                    color = "#38bdf8" if is_d else "#e2e8f0"
+                    size_str = ""
+                    if not is_d:
+                        sz = item.stat().st_size
+                        if sz > 1024 * 1024:
+                            size_str = f"{sz / (1024*1024):.1f} MB"
+                        elif sz > 1024:
+                            size_str = f"{sz / 1024:.1f} KB"
+                        else:
+                            size_str = f"{sz} B"
+                    link = f"/api/file?path={urllib.parse.quote(str(item))}"
+                    items_html.append(
+                        f"<li style='padding:8px 0;display:flex;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,0.06);'>"
+                        f"  <a href='{link}' style='color:{color};text-decoration:none;word-break:break-all;'>{icon} {name}</a>"
+                        f"  <span style='color:#64748b;font-size:0.85rem;margin-left:12px;white-space:nowrap;'>{size_str}</span>"
+                        f"</li>"
+                    )
+                except Exception:
+                    continue
+
+            html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{target.name}/ - OptChat File Browser</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      margin: 0;
+      padding: 1.25rem;
+      line-height: 1.5;
+    }}
+    .container {{
+      max-width: 900px;
+      margin: 0 auto;
+      background: #1e293b;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      padding: 1.25rem;
+    }}
+    .header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      padding-bottom: 0.75rem;
+    }}
+    .back-btn {{
+      background: #334155;
+      color: #f8fafc;
+      padding: 6px 12px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 0.85rem;
+    }}
+    ul {{ list-style: none; padding: 0; margin: 0; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div style="word-break: break-all;"><b>Directory:</b> /{crumb_html}</div>
+      <a href="/" class="back-btn">💬 Back to Chat</a>
+    </div>
+    {parent_link}
+    <ul>
+      {"".join(items_html) if items_html else "<li style='color:#64748b;padding:12px 0;'>Directory is empty</li>"}
+    </ul>
+  </div>
+</body>
+</html>"""
+            return web.Response(text=html, content_type="text/html")
+
+        # It's a file
+        if request.query.get("raw") == "1":
+            return web.FileResponse(target)
+
+        # Image extensions
+        img_exts = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico"}
+        if target.suffix.lower() in img_exts:
+            return web.FileResponse(target)
+
+        # Text / code file preview
+        try:
+            stat = target.stat()
+            if stat.st_size > 5 * 1024 * 1024:
+                return web.FileResponse(target)
+            content = target.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return web.FileResponse(target)
+
+        escaped_content = html_lib.escape(content)
+        raw_url = f"/api/file?path={urllib.parse.quote(str(target))}&raw=1"
+        parent_url = f"/api/file?path={urllib.parse.quote(str(target.parent))}"
+
+        file_html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{target.name} - OptChat File Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      margin: 0;
+      padding: 1rem;
+      line-height: 1.4;
+    }}
+    .container {{
+      max-width: 1000px;
+      margin: 0 auto;
+      background: #1e293b;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      overflow: hidden;
+    }}
+    .header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #0f172a;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      flex-wrap: wrap;
+      gap: 8px;
+    }}
+    .btn {{
+      background: #334155;
+      color: #f8fafc;
+      padding: 5px 10px;
+      border-radius: 5px;
+      text-decoration: none;
+      font-size: 0.8rem;
+    }}
+    .btn:hover {{ background: #475569; }}
+    pre {{
+      margin: 0;
+      padding: 1rem;
+      overflow-x: auto;
+      font-family: "JetBrains Mono", Menlo, Consolas, Monaco, monospace;
+      font-size: 0.88rem;
+      line-height: 1.5;
+      color: #e2e8f0;
+      background: #1e293b;
+    }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div style="font-weight: 600; color: #38bdf8; word-break: break-all;">📄 {target.name}</div>
+      <div style="display: flex; gap: 8px;">
+        <a href="{parent_url}" class="btn">📁 Folder</a>
+        <a href="{raw_url}" class="btn" download>⬇ Raw</a>
+        <a href="/" class="btn">💬 Chat</a>
+      </div>
+    </div>
+    <pre><code>{escaped_content}</code></pre>
+  </div>
+</body>
+</html>"""
+        return web.Response(text=file_html, content_type="text/html")
 
     async def handle_api_session_get(self, request: web.Request) -> web.Response:
         return web.json_response({

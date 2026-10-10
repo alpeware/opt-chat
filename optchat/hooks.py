@@ -78,16 +78,26 @@ def handle_hook_command(event_name: str) -> None:
 
     if not is_compactor and not is_synthetic and payload:
         last_input = payload.get("lastUserInput", "")
-        if "CRITICAL REQUIREMENT: Output ONLY the single summary line directly" in last_input or "You write the memory of OptChat" in last_input:
+        if "CRITICAL REQUIREMENT: Output ONLY the single summary line directly" in last_input:
             is_compactor = True
         elif not last_input:
             tpath_str = payload.get("transcriptPath")
             if tpath_str and os.path.isfile(tpath_str):
                 try:
                     with open(tpath_str, "r", encoding="utf-8", errors="ignore") as f:
-                        first_line = f.readline()
-                        if "CRITICAL REQUIREMENT" in first_line or "You write the memory of OptChat" in first_line or "CRITICAL HOST DIRECTIVE" in first_line:
-                            is_compactor = True
+                        for line in f:
+                            s = line.strip()
+                            if not s:
+                                continue
+                            try:
+                                sdata = json.loads(s)
+                            except Exception:
+                                continue
+                            if sdata.get("type") == "USER_INPUT":
+                                u_content = sdata.get("content", "")
+                                if "CRITICAL REQUIREMENT: Output ONLY the single summary line directly" in u_content:
+                                    is_compactor = True
+                                break
                 except Exception:
                     pass
 

@@ -97,6 +97,39 @@ async def test_web_server_endpoints(tmp_path: Path):
         assert res.status == 200
         rpc_res = await res.json()
         assert "Hello world from test" in rpc_res["result"]["content"][0]["text"]
+        # 8. Test /api/file endpoint (directory and file viewing)
+        test_dir = tmp_path / "sample_workspace"
+        test_dir.mkdir()
+        sample_file = test_dir / "summary.txt"
+        sample_file.write_text("Execution complete: 10/10 tasks evaluated.")
+
+        # 8a. Directory view
+        res_dir = await client.get(f"/api/file?path={test_dir}")
+        assert res_dir.status == 200
+        dir_html = await res_dir.text()
+        assert "sample_workspace" in dir_html
+        assert "summary.txt" in dir_html
+
+        # 8b. File preview view
+        res_file = await client.get(f"/api/file?path={sample_file}")
+        assert res_file.status == 200
+        file_html = await res_file.text()
+        assert "summary.txt" in file_html
+        assert "10/10 tasks evaluated" in file_html
+
+        # 8c. Raw file download
+        res_raw = await client.get(f"/api/file?path={sample_file}&raw=1")
+        assert res_raw.status == 200
+        raw_text = await res_raw.text()
+        assert raw_text == "Execution complete: 10/10 tasks evaluated."
+
+        # 8d. 404 for missing path
+        res_404 = await client.get("/api/file?path=/tmp/non_existent_optchat_path_xyz")
+        assert res_404.status == 404
+
+        # 8e. 403 for unauthorized path
+        res_403 = await client.get("/api/file?path=/etc/shadow")
+        assert res_403.status == 403
 
     finally:
         await client.close()
