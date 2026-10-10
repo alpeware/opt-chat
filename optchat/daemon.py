@@ -108,6 +108,7 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
     last_reply = None
     last_reply_idx = None
     last_user = None
+    system_messages = []
 
     try:
         with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
@@ -143,13 +144,29 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
                     last_user = extract_user_text(content)
                     break
                 elif stype == "SYSTEM_MESSAGE":
-                    prompt_text = parse_system_message_prompt(content)
-                    last_user = f"⏱️ {prompt_text}"
-                    break
+                    system_messages.append(content)
                 elif stype == "PLANNER_RESPONSE" and content and content.strip():
-                    # Hit previous turn's text reply without finding an explicit input
-                    last_user = "⚙️ Autonomous progress update"
+                    # Hit previous turn's text reply without finding an explicit user input
                     break
+
+        if last_reply is not None and last_user is None:
+            # No USER_INPUT found in this turn; check system messages or fallback to autonomous
+            if system_messages:
+                # Prefer high-level timer/cron/notification prompts over raw task completions
+                # Note: system_messages were collected walking backwards (most recent first)
+                chosen_sys = None
+                for sm in reversed(system_messages):  # check chronologically (earliest first)
+                    parsed = parse_system_message_prompt(sm)
+                    if not parsed.startswith("Background task "):
+                        chosen_sys = parsed
+                        break
+                if not chosen_sys:
+                    # Fallback to the earliest system message in this turn
+                    chosen_sys = parse_system_message_prompt(system_messages[-1])
+                last_user = f"⏱️ {chosen_sys}"
+            else:
+                last_user = "⚙️ Autonomous progress update"
+
     except Exception as e:
         logger.debug("Failed reading transcript %s: %s", transcript_path, e)
         return None

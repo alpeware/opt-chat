@@ -607,4 +607,47 @@ async def test_daemon_captures_timer_progress_and_deduplicates(tmp_path: Path):
         daemon.stop_in_thread()
 
 
+def test_extract_latest_turn_prioritizes_user_input_over_intermediate_bg_tasks(tmp_path: Path):
+    from optchat.daemon import extract_latest_turn_from_transcript
+
+    tpath = tmp_path / "transcript.jsonl"
+    with open(tpath, "w", encoding="utf-8") as f:
+        # Previous turn
+        f.write(json.dumps({"step_index": 1, "type": "USER_INPUT", "content": "Previous prompt"}) + "\n")
+        f.write(json.dumps({"step_index": 2, "type": "PLANNER_RESPONSE", "content": "Previous reply"}) + "\n")
+
+        # Current turn: user prompt
+        f.write(json.dumps({
+            "step_index": 3,
+            "type": "USER_INPUT",
+            "content": "<USER_REQUEST>\nLet's create a startup shell script that starts the daemon in the background\n</USER_REQUEST>",
+        }) + "\n")
+
+        # Intermediate tool calls (empty content)
+        f.write(json.dumps({"step_index": 4, "type": "PLANNER_RESPONSE", "content": ""}) + "\n")
+        f.write(json.dumps({"step_index": 5, "type": "GENERIC", "content": "Tool is running as a background task with task id: .../task-4197"}) + "\n")
+
+        # Intermediate background task completions (SYSTEM_MESSAGE)
+        f.write(json.dumps({
+            "step_index": 6,
+            "type": "SYSTEM_MESSAGE",
+            "content": '<SYSTEM_MESSAGE>\nTask id ".../task-4197" finished with result:\nThe command exited with code 0.\n</SYSTEM_MESSAGE>',
+        }) + "\n")
+
+        # Final reply for current turn
+        f.write(json.dumps({
+            "step_index": 7,
+            "type": "PLANNER_RESPONSE",
+            "content": "### Background Daemon Startup Script Deployed",
+        }) + "\n")
+
+    turn = extract_latest_turn_from_transcript(str(tpath))
+    assert turn is not None
+    assert turn["step_index"] == 7
+    # Crucial assertion: user prompt must be what the user typed, NOT the background task completion
+    assert turn["user"] == "Let's create a startup shell script that starts the daemon in the background"
+    assert turn["reply"] == "### Background Daemon Startup Script Deployed"
+
+
+
 
