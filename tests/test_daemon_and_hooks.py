@@ -442,3 +442,74 @@ async def test_subagent_lifecycle_without_parent_conversation_id(tmp_path: Path)
         daemon.stop_in_thread()
 
 
+@pytest.mark.asyncio
+async def test_main_turn_auto_capture_on_stop(tmp_path: Path):
+    """Verify that when a main agy turn completes, the Stop hook captures user prompt and reply with workspace tag and deduplicates."""
+    chat_dir = tmp_path / "chat"
+    sock_path = tmp_path / "engine.sock"
+    ws_dir = tmp_path / "super-app"
+    ws_dir.mkdir()
+
+    tpath = tmp_path / "transcript.jsonl"
+    with open(tpath, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"step_index": 1, "type": "USER_INPUT", "content": "<USER_REQUEST>Implement authentication flow</USER_REQUEST>"}) + "\n")
+        f.write(json.dumps({"step_index": 2, "type": "PLANNER_RESPONSE", "tool_calls": [{"name": "run_command", "args": {"CommandLine": "cargo build"}}]}) + "\n")
+        f.write(json.dumps({"step_index": 3, "type": "GENERIC", "content": "Compiling auth v0.1.0..."}) + "\n")
+        f.write(json.dumps({"step_index": 4, "type": "PLANNER_RESPONSE", "content": "I have completed implementing the auth flow with JWT tokens."}) + "\n")
+
+    daemon = OptChatDaemon(
+        chat_dir=chat_dir,
+        socket_path=sock_path,
+        provider_name="mock",
+    )
+    daemon.start_in_thread()
+
+    try:
+        client = EngineClient(socket_path=sock_path)
+        assert client.is_daemon_alive(timeout=2.0)
+
+        # 1. Fire Stop hook for main conversation
+        stop_payload = {
+            "conversationId": "main-conv-001",
+            "transcriptPath": str(tpath),
+            "workspacePaths": [str(ws_dir)],
+        }
+        res = await client.call_async("hook_event", event="stop", payload=stop_payload)
+        assert res.get("status") == "ok"
+
+        # 2. Check history in memory
+        msgs = client.get_history(limit=10)
+        assert len(msgs) == 2
+        assert msgs[0]["kind"] == "user"
+        assert "[super-app] Implement authentication flow" in msgs[0]["text"]
+        assert msgs[1]["kind"] == "talk"
+        assert "[super-app] I have completed implementing the auth flow" in msgs[1]["text"]
+
+        # 3. Test workspace filtering in get_history and get_view
+        filtered_msgs = client.get_history(limit=10, workspace="super-app")
+        assert len(filtered_msgs) == 2
+
+        other_msgs = client.get_history(limit=10, workspace="other-repo")
+        assert len(other_msgs) == 0
+
+        ws_view = client.get_view(workspace="super-app")
+        assert "<chat>" in ws_view
+        assert "[super-app]" in ws_view
+
+        other_view = client.get_view(workspace="other-repo")
+        assert "no entries for workspace [other-repo]" in other_view
+
+        # 4. Check get_state workspaces list
+        st = client.get_state()
+        assert "super-app" in st.get("workspaces", [])
+
+        # 5. Idempotence test: Fire Stop hook again with identical step_index
+        res2 = await client.call_async("hook_event", event="stop", payload=stop_payload)
+        assert res2.get("status") == "ok"
+        msgs_after = client.get_history(limit=10)
+        assert len(msgs_after) == 2  # NOT duplicated!
+
+    finally:
+        daemon.stop_in_thread()
+
+

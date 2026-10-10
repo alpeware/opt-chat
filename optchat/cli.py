@@ -284,6 +284,7 @@ def main() -> None:
 
     # view command
     view_parser = subparsers.add_parser("view", help="Display the live compressed memory tree (<chat>...</chat>)")
+    view_parser.add_argument("--workspace", "-w", default=None, help="Filter view lines for a specific workspace (e.g. opt-chat)")
     view_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
 
     # zoom command
@@ -311,6 +312,7 @@ def main() -> None:
     history_parser = subparsers.add_parser("history", help="Show recent message history")
     history_parser.add_argument("--limit", type=int, default=20, help="Number of messages to display (default: 20)")
     history_parser.add_argument("--kind", default=None, choices=["note", "user", "talk", "work"], help="Filter by message kind")
+    history_parser.add_argument("--workspace", "-w", default=None, help="Filter messages for a specific workspace (e.g. opt-chat)")
     history_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
 
     # device command
@@ -365,15 +367,21 @@ def main() -> None:
         from optchat.engine_client import EngineClient
         chat_dir = Path(args.chat_dir)
         client = EngineClient(socket_path=chat_dir / "engine.sock")
+        ws_name = getattr(args, "workspace", None)
         if client.is_daemon_alive():
-            view_text = client.get_view()
+            view_text = client.get_view(workspace=ws_name)
         else:
             storage = Storage(chat_dir)
             storage.open(acquire_lock=False)
             try:
                 view = LiveView(storage)
                 view.rebuild()
-                view_text = view.render()
+                if ws_name and ws_name.lower() != "all":
+                    tag = f"[{ws_name.lower()}]"
+                    lines = [p.render(storage) for p in view.parts if tag in p.render(storage).lower()]
+                    view_text = "<chat>\n" + "\n".join(lines) + "\n</chat>" if lines else f"<chat>\n(no entries for workspace [{ws_name}])\n</chat>"
+                else:
+                    view_text = view.render()
             finally:
                 storage.close()
         print(view_text)
@@ -485,12 +493,17 @@ def main() -> None:
         from optchat.engine_client import EngineClient
         chat_dir = Path(args.chat_dir)
         client = EngineClient(socket_path=chat_dir / "engine.sock")
+        ws_name = getattr(args, "workspace", None)
         if client.is_daemon_alive():
-            msgs = client.get_history(limit=args.limit)
+            msgs = client.get_history(limit=args.limit, workspace=ws_name)
         else:
             storage = Storage(chat_dir)
             storage.open(acquire_lock=False)
             try:
+                storage_msgs = storage.messages
+                if ws_name and ws_name.lower() != "all":
+                    tag = f"[{ws_name.lower()}]"
+                    storage_msgs = [m for m in storage_msgs if tag in m.text.lower()]
                 msgs = [
                     {
                         "i": m.i,
@@ -499,7 +512,7 @@ def main() -> None:
                         "size": m.size,
                         "date": m.date,
                     }
-                    for m in storage.messages[-args.limit:]
+                    for m in storage_msgs[-args.limit:]
                 ]
             finally:
                 storage.close()

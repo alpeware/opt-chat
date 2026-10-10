@@ -71,6 +71,60 @@ def extract_subagent_report_from_transcript(transcript_path: str) -> Optional[st
     return report
 
 
+def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[str, Any]]:
+    """Extract the most recent completed turn (step_index, user_text, reply_text) from transcript.jsonl."""
+    from optchat.importer import extract_user_text
+    if not transcript_path or not os.path.isfile(transcript_path):
+        return None
+    if "agy_isolated" in transcript_path or "compactor_workspace" in transcript_path:
+        return None
+
+    last_reply = None
+    last_reply_idx = None
+    last_user = None
+
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+
+        for line in reversed(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                data = json.loads(stripped)
+            except Exception:
+                continue
+
+            stype = data.get("type")
+            if last_reply is None and stype == "PLANNER_RESPONSE":
+                content = data.get("content")
+                if content and content.strip():
+                    last_reply = content.strip()
+                    last_reply_idx = data.get("step_index", 0)
+            elif last_reply is not None and stype == "USER_INPUT":
+                raw_u = data.get("content", "")
+                if (
+                    "CRITICAL REQUIREMENT: Output ONLY" in raw_u
+                    or "You write the memory of OptChat" in raw_u
+                    or "CRITICAL HOST DIRECTIVE" in raw_u
+                ):
+                    return None
+                last_user = extract_user_text(raw_u)
+                break
+    except Exception as e:
+        logger.debug("Failed reading transcript %s: %s", transcript_path, e)
+        return None
+
+    if last_reply is not None and last_user is not None and last_reply_idx is not None:
+        return {
+            "step_index": last_reply_idx,
+            "user": last_user,
+            "reply": last_reply,
+        }
+    return None
+
+
 class OptChatDaemon:
     def __init__(
         self,
@@ -112,6 +166,7 @@ class OptChatDaemon:
         self._running = False
         self._event_subscribers: Set[asyncio.Queue[Dict[str, Any]]] = set()
         self._active_subagents: Dict[str, Dict[str, Any]] = {}
+        self._logged_turn_steps: Dict[str, int] = {}
 
     def broadcast(self, event_type: str, content: str, extra: Optional[Dict[str, Any]] = None) -> None:
         """Broadcast real-time event to all connected subscriber clients (Web UI / CLI)."""
@@ -384,6 +439,15 @@ class OptChatDaemon:
                     "running": self.web_process is not None and self.web_process.returncode is None,
                     "pid": self.web_process.pid if self.web_process else None,
                 }
+
+            # Discover known workspaces from recent messages
+            known_workspaces = set()
+            if self.storage and self.storage.messages:
+                for m in self.storage.messages[-200:]:
+                    mat = re.match(r"^\[([a-zA-Z0-9_\-\.]+)\]", m.text)
+                    if mat:
+                        known_workspaces.add(mat.group(1))
+
             return {
                 "status": "ok",
                 "messages_count": len(self.storage.messages),
@@ -392,6 +456,7 @@ class OptChatDaemon:
                 "view_budget": self.view.budget,
                 "is_settled": self.view.is_settled(),
                 "web_server": web_info,
+                "workspaces": sorted(list(known_workspaces)),
             }
 
         elif action == "restart":
@@ -403,19 +468,44 @@ class OptChatDaemon:
                 logger.warning("Failed scheduling restart: %s", e)
             return {"status": "ok", "message": "Daemon restart scheduled."}
 
-
         elif action == "get_view":
+            ws_filter = req.get("workspace")
+            raw_view = self.view.render()
+            lines = [part.render(self.storage) for part in self.view.parts]
+
+            if ws_filter and ws_filter.lower() != "all":
+                tag = f"[{ws_filter.lower()}]"
+                filtered_lines = [l for l in lines if tag in l.lower()]
+                if filtered_lines:
+                    rendered_view = "<chat>\n" + "\n".join(filtered_lines) + "\n</chat>"
+                else:
+                    rendered_view = f"<chat>\n(no entries for workspace [{ws_filter}])\n</chat>"
+                return {
+                    "status": "ok",
+                    "view": rendered_view,
+                    "is_settled": self.view.is_settled(),
+                    "size": len(rendered_view.encode("utf-8")),
+                    "lines": filtered_lines,
+                }
+
             return {
                 "status": "ok",
-                "view": self.view.render(),
+                "view": raw_view,
                 "is_settled": self.view.is_settled(),
                 "size": self.view.compute_size(),
-                "lines": [part.render(self.storage) for part in self.view.parts],
+                "lines": lines,
             }
 
         elif action == "get_history":
             limit = int(req.get("limit", 30))
-            msgs = self.storage.messages[-limit:] if self.storage.messages else []
+            ws_filter = req.get("workspace")
+            msgs = self.storage.messages if self.storage.messages else []
+
+            if ws_filter and ws_filter.lower() != "all":
+                tag = f"[{ws_filter.lower()}]"
+                msgs = [m for m in msgs if tag in m.text.lower()]
+
+            recent = msgs[-limit:] if msgs else []
             return {
                 "status": "ok",
                 "messages": [
@@ -426,7 +516,7 @@ class OptChatDaemon:
                         "size": m.size,
                         "date": m.date,
                     }
-                    for m in msgs
+                    for m in recent
                 ],
             }
 
@@ -439,6 +529,11 @@ class OptChatDaemon:
             self.view.on_new_message(msg.i)
             if self.compactor:
                 self.compactor.pump()
+            self.broadcast(
+                "new_message",
+                text,
+                extra={"kind": kind, "i": msg.i, "date": msg.date},
+            )
             return {
                 "status": "ok",
                 "message": {
@@ -556,6 +651,16 @@ class OptChatDaemon:
         parent_id = payload.get("parentConversationId")
         workspace = (payload.get("workspacePaths") or [""])[0]
         agent_name = payload.get("agentName", "")
+        tpath = payload.get("transcriptPath", "")
+
+        is_synthetic = (
+            "agy_isolated" in str(workspace)
+            or "agy_isolated" in str(tpath)
+            or "compactor_workspace" in str(workspace)
+            or (workspace and "/tmp" in workspace and "pytest" not in workspace and "test" not in workspace)
+        )
+        if is_synthetic and event != "pre_invocation":
+            return {"status": "ok", "ignored": "synthetic_run"}
 
         if event == "pre_invocation":
             assert self.view is not None
@@ -716,6 +821,68 @@ class OptChatDaemon:
                 if self.compactor:
                     self.compactor.pump()
                 return {"status": "ok"}
+
+            # Main agent turn completed - automatically capture turn into OptChat memory
+            tpath = payload.get("transcriptPath")
+            if not tpath or not os.path.isfile(tpath):
+                if conv_id and conv_id != "unknown":
+                    cand = Path.home() / ".gemini" / "antigravity-cli" / "brain" / conv_id / ".system_generated" / "logs" / "transcript.jsonl"
+                    if cand.is_file():
+                        tpath = str(cand)
+
+            if tpath and os.path.isfile(tpath):
+                turn_info = extract_latest_turn_from_transcript(tpath)
+                if turn_info:
+                    step_idx = turn_info["step_index"]
+                    last_logged = self._logged_turn_steps.get(conv_id, -1)
+                    if step_idx > last_logged:
+                        clean_user = turn_info["user"].strip()
+                        clean_reply = clean_message_text(turn_info["reply"]).strip()
+
+                        ws_target = workspace or (str(self.workspace) if self.workspace else os.getcwd())
+                        ws_name = Path(ws_target).name if ws_target else "general"
+                        if ws_name.startswith("agy_isolated") or "agy_isolated" in ws_name or ws_name == ".compactor_workspace":
+                            self._logged_turn_steps[conv_id] = step_idx
+                            return {"status": "ok", "ignored": "synthetic_workspace"}
+
+                        # Deduplication check against recent messages in storage
+                        already_logged = False
+                        if self.storage and self.storage.messages:
+                            for m in self.storage.messages[-6:]:
+                                if clean_reply[:60] in m.text or m.text[:60] in clean_reply:
+                                    already_logged = True
+                                    break
+
+                        if not already_logged and self.storage and self.view:
+                            user_entry = f"[{ws_name}] {clean_user}"
+                            talk_entry = f"[{ws_name}] {clean_reply}"
+
+                            msg1 = self.storage.append_message("user", user_entry)
+                            self.view.on_new_message(msg1.i)
+
+                            msg2 = self.storage.append_message("talk", talk_entry)
+                            self.view.on_new_message(msg2.i)
+
+                            self._logged_turn_steps[conv_id] = step_idx
+                            logger.info("Auto-logged turn #%d from [%s] into memory (msgs #%d, #%d)", step_idx, ws_name, msg1.i, msg2.i)
+
+                            self.broadcast(
+                                "new_message",
+                                user_entry,
+                                extra={"kind": "user", "i": msg1.i, "workspace": ws_name, "conversationId": conv_id, "date": msg1.date},
+                            )
+                            self.broadcast(
+                                "new_message",
+                                talk_entry,
+                                extra={"kind": "talk", "i": msg2.i, "workspace": ws_name, "conversationId": conv_id, "date": msg2.date},
+                            )
+                            self.broadcast(
+                                "turn_complete",
+                                f"Logged turn #{step_idx} from [{ws_name}]",
+                                extra={"workspace": ws_name, "conversationId": conv_id, "user_i": msg1.i, "talk_i": msg2.i},
+                            )
+                        else:
+                            self._logged_turn_steps[conv_id] = step_idx
 
             # Turn loop finished; trigger compactor pump
             if self.compactor:

@@ -434,6 +434,16 @@ function handleStreamEvent(event) {
       const pb = pendingAssistantBubbles.shift();
       pb.innerHTML = `<span style="color: #ef4444;">Error: ${escapeHtml(event.content)}</span>`;
     }
+  } else if (event.type === 'new_message') {
+    const kind = (event.extra && event.extra.kind) || 'talk';
+    const text = event.content;
+    const date = (event.extra && event.extra.date) || new Date().toISOString();
+    const ws = (event.extra && event.extra.workspace);
+    if (!selectedWorkspace || selectedWorkspace === 'all' || !ws || ws === selectedWorkspace) {
+      appendMessage(kind, text, date, false);
+      scrollToBottom();
+    }
+    fetchState();
   } else if (event.type === 'turn_complete') {
     if (currentAssistantBubble) {
       if (currentStreamedText) {
@@ -447,6 +457,8 @@ function handleStreamEvent(event) {
 }
 
 let currentWorkspace = '';
+let selectedWorkspace = 'all';
+let availableWorkspaces = [];
 
 async function fetchState() {
   try {
@@ -458,12 +470,18 @@ async function fetchState() {
     const pct = ((data.view_size / data.view_budget) * 100).toFixed(0);
     document.getElementById('pill-view').textContent = `View: ${pct}%`;
     document.getElementById('status-dot').style.background = data.is_settled ? '#10b981' : '#f59e0b';
+    if (data.workspaces && Array.isArray(data.workspaces)) {
+      availableWorkspaces = data.workspaces;
+    }
     if (data.workspace) {
       currentWorkspace = data.workspace;
       const parts = data.workspace.split('/').filter(Boolean);
       const name = parts.length > 0 ? parts[parts.length - 1] : '/';
       const wsEl = document.getElementById('pill-ws');
-      if (wsEl) wsEl.textContent = '📁 ' + name;
+      if (wsEl) {
+        const filterLabel = selectedWorkspace && selectedWorkspace !== 'all' ? selectedWorkspace : name;
+        wsEl.textContent = '📁 ' + filterLabel;
+      }
     }
   } catch (e) {
     document.getElementById('status-dot').style.background = '#ef4444';
@@ -471,13 +489,19 @@ async function fetchState() {
 }
 
 async function openSessionModal() {
-  const newWs = prompt("Active Workspace:\n" + currentWorkspace + "\n\nEnter new workspace path to switch (e.g. /home/simonpure):", currentWorkspace);
-  if (newWs && newWs.trim() && newWs.trim() !== currentWorkspace) {
+  let wsListStr = availableWorkspaces.length > 0 ? "\nDiscovered Workspaces: " + availableWorkspaces.join(", ") : "";
+  const choice = prompt(
+    `Filter by Workspace or Switch Directory:\n\nActive Directory: ${currentWorkspace}\nCurrent Filter: ${selectedWorkspace}${wsListStr}\n\nType a workspace name to filter (or 'all' for all messages), or enter an absolute path starting with '/' to change active directory:`,
+    selectedWorkspace
+  );
+  if (!choice) return;
+  const trimmed = choice.trim();
+  if (trimmed.startsWith('/')) {
     try {
       const res = await fetch('/api/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspace: newWs.trim() })
+        body: JSON.stringify({ workspace: trimmed })
       });
       const data = await res.json();
       if (data.error) {
@@ -488,6 +512,14 @@ async function openSessionModal() {
     } catch (e) {
       alert('Error: ' + e.message);
     }
+  } else {
+    selectedWorkspace = trimmed.toLowerCase();
+    const wsEl = document.getElementById('pill-ws');
+    if (wsEl) {
+      wsEl.textContent = selectedWorkspace === 'all' ? '📁 All' : '📁 ' + selectedWorkspace;
+    }
+    fetchHistory();
+    fetchState();
   }
 }
 
@@ -500,7 +532,8 @@ async function fetchHistory() {
     return;
   }
   try {
-    const res = await fetch('/api/history?limit=50');
+    const wsQuery = selectedWorkspace && selectedWorkspace !== 'all' ? `&workspace=${encodeURIComponent(selectedWorkspace)}` : '';
+    const res = await fetch(`/api/history?limit=50${wsQuery}`);
     if (!res.ok) {
       console.error('Failed to load history:', res.status, res.statusText);
       return;
@@ -594,7 +627,8 @@ async function renderFoldedView() {
   `;
 
   try {
-    const res = await fetch('/api/view');
+    const wsQuery = selectedWorkspace && selectedWorkspace !== 'all' ? `?workspace=${encodeURIComponent(selectedWorkspace)}` : '';
+    const res = await fetch(`/api/view${wsQuery}`);
     if (!res.ok) throw new Error('Failed to load view');
     const data = await res.json();
     const container = document.getElementById('tree-blocks-container');

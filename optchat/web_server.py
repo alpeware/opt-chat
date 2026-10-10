@@ -16,6 +16,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import socket
 import sys
 from typing import Any, Dict, List, Optional, Set
@@ -291,9 +292,18 @@ class OptChatWebServer:
                 "daemon_connected": True,
                 "workspace": str(self.workspace),
                 "conversation_id": self.conversation_id,
+                "workspaces": st.get("workspaces", []),
             })
 
         assert self.storage is not None and self.view is not None
+        # Discover known workspaces from offline storage
+        known_workspaces = set()
+        if self.storage and self.storage.messages:
+            for m in self.storage.messages[-200:]:
+                mat = re.match(r"^\[([a-zA-Z0-9_\-\.]+)\]", m.text)
+                if mat:
+                    known_workspaces.add(mat.group(1))
+
         return web.json_response({
             "messages_count": len(self.storage.messages),
             "tree_nodes_count": len(self.storage.tree),
@@ -303,16 +313,25 @@ class OptChatWebServer:
             "daemon_connected": False,
             "workspace": str(self.workspace),
             "conversation_id": self.conversation_id,
+            "workspaces": sorted(list(known_workspaces)),
         })
 
     async def handle_api_history(self, request: web.Request) -> web.Response:
         limit = int(request.query.get("limit", "50"))
+        ws_filter = request.query.get("workspace")
         if self.is_daemon_connected and self.engine_client:
-            res = await self.engine_client.call_async("get_history", limit=limit)
+            kwargs = {"limit": limit}
+            if ws_filter:
+                kwargs["workspace"] = ws_filter
+            res = await self.engine_client.call_async("get_history", **kwargs)
             return web.json_response(res.get("messages", []))
 
         assert self.storage is not None
-        msgs = self.storage.messages[-limit:] if limit > 0 else self.storage.messages
+        storage_msgs = self.storage.messages
+        if ws_filter and ws_filter.lower() != "all":
+            tag = f"[{ws_filter.lower()}]"
+            storage_msgs = [m for m in storage_msgs if tag in m.text.lower()]
+        msgs = storage_msgs[-limit:] if limit > 0 else storage_msgs
         result = [
             {
                 "i": m.i,
@@ -327,8 +346,12 @@ class OptChatWebServer:
         return web.json_response(result)
 
     async def handle_api_view(self, request: web.Request) -> web.Response:
+        ws_filter = request.query.get("workspace")
         if self.is_daemon_connected and self.engine_client:
-            res = await self.engine_client.call_async("get_view")
+            kwargs = {}
+            if ws_filter:
+                kwargs["workspace"] = ws_filter
+            res = await self.engine_client.call_async("get_view", **kwargs)
             return web.json_response({
                 "size": res.get("size", 0),
                 "budget": 128000,
@@ -337,6 +360,9 @@ class OptChatWebServer:
 
         assert self.storage is not None and self.view is not None
         lines = [part.render(self.storage) for part in self.view.parts]
+        if ws_filter and ws_filter.lower() != "all":
+            tag = f"[{ws_filter.lower()}]"
+            lines = [l for l in lines if tag in l.lower()]
         return web.json_response({
             "size": self.view.compute_size(),
             "budget": self.view.budget,

@@ -111,5 +111,18 @@ def test_cli_memory_with_daemon(tmp_path: Path):
         res = run_cli("history", "--chat-dir", str(chat_dir))
         assert res.returncode == 0
         assert "Daemon test message" in res.stdout
+
+        # 7. workspace filtering test
+        run_cli("log", "[opt-chat] Fix bug in parser", "--kind", "talk", "--chat-dir", str(chat_dir))
+        run_cli("log", "[website] Update landing page hero", "--kind", "note", "--chat-dir", str(chat_dir))
+
+        res_ws = run_cli("history", "--workspace", "opt-chat", "--chat-dir", str(chat_dir))
+        assert res_ws.returncode == 0
+        assert "Fix bug in parser" in res_ws.stdout
+        assert "Update landing page hero" not in res_ws.stdout
+
+        res_view_ws = run_cli("view", "--workspace", "opt-chat", "--chat-dir", str(chat_dir))
+        assert res_view_ws.returncode == 0
+        assert "Fix bug in parser" in res_view_ws.stdout
     finally:
         daemon.stop_in_thread()

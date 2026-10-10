@@ -36,9 +36,25 @@ def handle_hook_command(event_name: str) -> None:
 
     event_normalized = event_name.lower().replace("-", "_")
 
-    # Ignore internal OptChat compactor turns to prevent memory injection and pump loops
+    # Ignore internal OptChat compactor turns and synthetic benchmark/eval runs
     is_compactor = os.environ.get("OPTCHAT_IS_COMPACTOR") == "1"
-    if not is_compactor and payload:
+    is_synthetic = False
+
+    if payload:
+        ws = (payload.get("workspacePaths") or [""])[0]
+        tpath_str = payload.get("transcriptPath", "")
+        last_input = payload.get("lastUserInput", "")
+
+        if (
+            "agy_isolated" in ws
+            or "agy_isolated" in str(tpath_str)
+            or "compactor_workspace" in ws
+            or (ws and "/tmp" in ws and "pytest" not in ws and "test" not in ws)
+            or "CRITICAL HOST DIRECTIVE" in last_input
+        ):
+            is_synthetic = True
+
+    if not is_compactor and not is_synthetic and payload:
         last_input = payload.get("lastUserInput", "")
         if "CRITICAL REQUIREMENT: Output ONLY the single summary line directly" in last_input or "You write the memory of OptChat" in last_input:
             is_compactor = True
@@ -48,12 +64,12 @@ def handle_hook_command(event_name: str) -> None:
                 try:
                     with open(tpath_str, "r", encoding="utf-8", errors="ignore") as f:
                         first_line = f.readline()
-                        if "CRITICAL REQUIREMENT" in first_line or "You write the memory of OptChat" in first_line:
+                        if "CRITICAL REQUIREMENT" in first_line or "You write the memory of OptChat" in first_line or "CRITICAL HOST DIRECTIVE" in first_line:
                             is_compactor = True
                 except Exception:
                     pass
 
-    if is_compactor:
+    if is_compactor or is_synthetic:
         if event_normalized == "pre_invocation":
             sys.stdout.write(json.dumps({"injectSteps": []}) + "\n")
         elif event_normalized in ("pre_tool", "stop"):

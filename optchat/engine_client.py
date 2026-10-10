@@ -152,12 +152,18 @@ class EngineClient:
     async def get_state_async(self) -> Dict[str, Any]:
         return await self.call_async("get_state")
 
-    def get_view(self) -> str:
-        res = self.call("get_view")
+    def get_view(self, workspace: Optional[str] = None) -> str:
+        kwargs = {}
+        if workspace:
+            kwargs["workspace"] = workspace
+        res = self.call("get_view", **kwargs)
         return res.get("view", "")
 
-    async def get_view_async(self) -> str:
-        res = await self.call_async("get_view")
+    async def get_view_async(self, workspace: Optional[str] = None) -> str:
+        kwargs = {}
+        if workspace:
+            kwargs["workspace"] = workspace
+        res = await self.call_async("get_view", **kwargs)
         return res.get("view", "")
 
     def append_message(self, kind: str, text: str) -> Dict[str, Any]:
@@ -182,12 +188,18 @@ class EngineClient:
         res = await self.call_async("date", id=id_)
         return res.get("output", "")
 
-    def get_history(self, limit: int = 30) -> List[Dict[str, Any]]:
-        res = self.call("get_history", limit=limit)
+    def get_history(self, limit: int = 30, workspace: Optional[str] = None) -> List[Dict[str, Any]]:
+        kwargs = {"limit": limit}
+        if workspace:
+            kwargs["workspace"] = workspace
+        res = self.call("get_history", **kwargs)
         return res.get("messages", [])
 
-    async def get_history_async(self, limit: int = 30) -> List[Dict[str, Any]]:
-        res = await self.call_async("get_history", limit=limit)
+    async def get_history_async(self, limit: int = 30, workspace: Optional[str] = None) -> List[Dict[str, Any]]:
+        kwargs = {"limit": limit}
+        if workspace:
+            kwargs["workspace"] = workspace
+        res = await self.call_async("get_history", **kwargs)
         return res.get("messages", [])
 
     def rebuild(self) -> Dict[str, Any]:
