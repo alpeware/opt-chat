@@ -2,6 +2,10 @@ let selectedLine = null;
 let currentAssistantBubble = null;
 let currentStreamedText = '';
 const pendingAssistantBubbles = [];
+let currentWorkspace = '';
+let selectedWorkspace = 'all';
+let selectedCategory = 'all';
+let availableWorkspaces = [];
 
 function setAppHeight() {
   const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
@@ -159,7 +163,6 @@ function handleStreamEvent(event) {
     const role = (event.extra && event.extra.role) || 'Subagent';
     appendMessage('work', `### 📋 Subagent Report: ${role}\n\n${repText}`, new Date().toISOString(), false);
     scrollToBottom();
-  }
     fetchState();
   } else if (event.type === 'error') {
     if (currentAssistantBubble) {
@@ -198,11 +201,6 @@ function handleStreamEvent(event) {
     fetchState();
   }
 }
-
-let currentWorkspace = '';
-let selectedWorkspace = 'all';
-let selectedCategory = 'all';
-let availableWorkspaces = [];
 
 function setCategoryFilter(cat) {
   selectedCategory = cat || 'all';
@@ -383,40 +381,9 @@ async function fetchHistory() {
         }
       } catch (_) {}
 
-      msgs.forEach((m, idx) => {
-        let threadId = null;
-        if (m.kind === 'work' && (m.text.includes('Subagent Report:') || m.text.startsWith('['))) {
-          let role = 'Subagent';
-          let reportText = m.text;
-          const match = m.text.match(/Subagent Report:?\s*([^\n\r]+)/i);
-          if (match) {
-            role = match[1].trim();
-            reportText = m.text.replace(/### 📋 Subagent Report:\s*[^\n]+\n*/i, '').trim();
-          } else {
-            const match2 = m.text.match(/^\[([^\]]+)\]\s*(.*)/s);
-            if (match2) {
-              role = match2[1].trim();
-              reportText = match2[2].trim();
-            }
-          }
-          threadId = 'hist-sub-' + idx;
-          if (!subagentThreads.has(threadId)) {
-            subagentThreads.set(threadId, {
-              id: threadId,
-              role: role,
-              typeName: 'subagent',
-              prompt: '',
-              status: 'completed',
-              tools: [],
-              report: reportText,
-              startTime: m.date || new Date().toISOString(),
-              endTime: m.date || new Date().toISOString()
-            });
-          }
-        }
-        appendMessage(m.kind, m.text, m.date, false, threadId, m.workspace, m.device);
+      msgs.forEach((m) => {
+        appendMessage(m.kind, m.text, m.date, false, null, m.workspace, m.device);
       });
-      renderAgentTabs();
       scrollToBottom();
     }
   } catch (e) {
@@ -687,9 +654,6 @@ function renderBubbleContent(kind, text, threadId = null) {
   const isOpen = kind !== 'work';
   const preview = escapeHtml(getMessagePreview(text, kind));
   let fullHtml = formatMarkdown(text);
-  if (kind === 'work' && threadId) {
-    fullHtml += `<div style="margin-top: 10px;"><button class="btn-open-tab" onclick="switchAgentTab('${escapeHtml(threadId)}')">🔍 Switch to Subagent Workspace Tab →</button></div>`;
-  }
 
   return `
     <details class="msg-details" ${isOpen ? 'open' : ''}>
