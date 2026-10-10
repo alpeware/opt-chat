@@ -9,15 +9,21 @@ from optchat.storage import Message, ProcessLock, Storage, TreeNode, cap_tool_ou
 
 
 def test_message_creation_and_size():
-    msg = Message(0, "user", "hello world", len("user: hello world".encode("utf-8")), "2026-10-06T13:00:00Z")
+    msg = Message(0, "user", "hello world", len("user: hello world".encode("utf-8")), "2026-10-06T13:00:00Z", workspace="test-repo", device="laptop")
     assert msg.i == 0
     assert msg.kind == "user"
     assert msg.size == 17
+    assert msg.workspace == "test-repo"
+    assert msg.device == "laptop"
     d = msg.to_dict()
     assert d["i"] == 0
+    assert d["workspace"] == "test-repo"
+    assert d["device"] == "laptop"
     loaded = Message.from_dict(d)
     assert loaded.text == "hello world"
     assert loaded.size == 17
+    assert loaded.workspace == "test-repo"
+    assert loaded.device == "laptop"
 
 
 def test_tree_node_creation():

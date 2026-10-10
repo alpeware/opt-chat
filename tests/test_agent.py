@@ -70,7 +70,8 @@ async def test_agent_turn_execution(tmp_path: Path):
 
     echo_msg = storage.messages[4]
     assert echo_msg.kind == "echo"
-    assert "0+0|user: Hello OptChat" in echo_msg.text
+    assert "0+0|user" in echo_msg.text
+    assert "Hello OptChat" in echo_msg.text
 
     compactor.stop()
     storage.close()

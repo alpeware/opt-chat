@@ -131,10 +131,11 @@ class Compactor:
             if l == 0:
                 msg = self.storage.get_message(i)
                 assert msg is not None
+                ws_tag = f"[{msg.workspace}] " if msg.workspace else ""
                 step_block = (
                     f"For scale, this line is exactly 512 bytes:\n{SCALE}\n\n"
                     f"Compress this message into one line, in at most 512 bytes:\n"
-                    f"{msg.kind}: {msg.text}"
+                    f"{msg.kind}: {ws_tag}{msg.text}"
                 )
             else:
                 child_a = self.storage.get_node(l - 1, 2 * i)

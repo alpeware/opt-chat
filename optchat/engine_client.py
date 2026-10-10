@@ -166,11 +166,33 @@ class EngineClient:
         res = await self.call_async("get_view", **kwargs)
         return res.get("view", "")
 
-    def append_message(self, kind: str, text: str) -> Dict[str, Any]:
-        return self.call("append_message", kind=kind, text=text)
+    def append_message(
+        self,
+        kind: str,
+        text: str,
+        workspace: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        kwargs = {"kind": kind, "text": text}
+        if workspace:
+            kwargs["workspace"] = workspace
+        if device:
+            kwargs["device"] = device
+        return self.call("append_message", **kwargs)
 
-    async def append_message_async(self, kind: str, text: str) -> Dict[str, Any]:
-        return await self.call_async("append_message", kind=kind, text=text)
+    async def append_message_async(
+        self,
+        kind: str,
+        text: str,
+        workspace: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        kwargs = {"kind": kind, "text": text}
+        if workspace:
+            kwargs["workspace"] = workspace
+        if device:
+            kwargs["device"] = device
+        return await self.call_async("append_message", **kwargs)
 
     def zoom(self, id_: int, n: int) -> str:
         res = self.call("zoom", id=id_, n=n)
@@ -188,17 +210,31 @@ class EngineClient:
         res = await self.call_async("date", id=id_)
         return res.get("output", "")
 
-    def get_history(self, limit: int = 30, workspace: Optional[str] = None) -> List[Dict[str, Any]]:
-        kwargs = {"limit": limit}
+    def get_history(
+        self,
+        limit: int = 30,
+        workspace: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        kwargs: Dict[str, Any] = {"limit": limit}
         if workspace:
             kwargs["workspace"] = workspace
+        if category:
+            kwargs["category"] = category
         res = self.call("get_history", **kwargs)
         return res.get("messages", [])
 
-    async def get_history_async(self, limit: int = 30, workspace: Optional[str] = None) -> List[Dict[str, Any]]:
-        kwargs = {"limit": limit}
+    async def get_history_async(
+        self,
+        limit: int = 30,
+        workspace: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        kwargs: Dict[str, Any] = {"limit": limit}
         if workspace:
             kwargs["workspace"] = workspace
+        if category:
+            kwargs["category"] = category
         res = await self.call_async("get_history", **kwargs)
         return res.get("messages", [])
 
@@ -225,9 +261,15 @@ class ProxyStorage:
         self.main_dir = self.chat_dir / "main"
         self.tree_dir = self.chat_dir / "tree"
 
-    def append_message(self, kind: str, text: str) -> Any:
+    def append_message(
+        self,
+        kind: str,
+        text: str,
+        workspace: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> Any:
         from optchat.storage import Message
-        res = self.client.append_message(kind, text)
+        res = self.client.append_message(kind, text, workspace=workspace, device=device)
         m = res.get("message", {})
         return Message.from_dict(m)
 

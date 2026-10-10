@@ -15,6 +15,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import socket
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -66,18 +67,30 @@ def get_device_name_info(cfg_path: Optional[Path] = None) -> Tuple[str, str]:
 
 
 class Message:
-    __slots__ = ("i", "kind", "text", "size", "date", "key")
+    __slots__ = ("i", "kind", "text", "size", "date", "key", "workspace", "device")
 
-    def __init__(self, i: int, kind: str, text: str, size: int, date: str, key: Optional[str] = None):
+    def __init__(
+        self,
+        i: int,
+        kind: str,
+        text: str,
+        size: int,
+        date: str,
+        key: Optional[str] = None,
+        workspace: Optional[str] = None,
+        device: Optional[str] = None,
+    ):
         self.i = i
         self.kind = kind
         self.text = text
         self.size = size
         self.date = date
         self.key = key or f"{date}#{get_device_name()}"
+        self.workspace = workspace
+        self.device = device or (self.key.split("#", 1)[1] if "#" in self.key else get_device_name())
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "i": self.i,
             "kind": self.kind,
             "text": self.text,
@@ -85,18 +98,37 @@ class Message:
             "date": self.date,
             "key": self.key,
         }
+        if self.workspace:
+            d["workspace"] = self.workspace
+        if self.device:
+            d["device"] = self.device
+        return d
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> Message:
         date_str = str(d["date"])
         key_str = str(d.get("key") or f"{date_str}#{get_device_name()}")
+        text_str = str(d["text"])
+        ws = d.get("workspace")
+        # Backwards compatibility: extract ws if text started with [ws_name]
+        if not ws and text_str.startswith("["):
+            m = re.match(r"^\[([a-zA-Z0-9_\-\.]+)\]\s*(.*)", text_str, re.DOTALL)
+            if m:
+                ws = m.group(1)
+        device = d.get("device")
+        if not device and "#" in key_str:
+            device = key_str.split("#", 1)[1]
+
+        ws_tag = f"[{ws}] " if ws else ""
         return cls(
             i=int(d["i"]),
             kind=str(d["kind"]),
-            text=str(d["text"]),
-            size=int(d.get("size", len(f"{d['kind']}: {d['text']}".encode("utf-8")))),
+            text=text_str,
+            size=int(d.get("size", len(f"{d['kind']}: {ws_tag}{text_str}".encode("utf-8")))),
             date=date_str,
             key=key_str,
+            workspace=ws,
+            device=device,
         )
 
 
@@ -322,7 +354,13 @@ class Storage:
                 os.fsync(f.fileno())
             os.replace(tmp_path, fpath)
 
-    def append_message(self, kind: str, text: str) -> Message:
+    def append_message(
+        self,
+        kind: str,
+        text: str,
+        workspace: Optional[str] = None,
+        device: Optional[str] = None,
+    ) -> Message:
         """Append message to log with single write and fsync durability (§2).
 
         kind: 'user', 'talk', 'tool', 'echo', 'note'
@@ -333,9 +371,18 @@ class Storage:
 
         idx = len(self.messages)
         now_iso = datetime.datetime.now().astimezone().isoformat()
-        size = len(f"{kind}: {text}".encode("utf-8"))
+        ws_tag = f"[{workspace}] " if workspace else ""
+        size = len(f"{kind}: {ws_tag}{text}".encode("utf-8"))
 
-        msg = Message(i=idx, kind=kind, text=text, size=size, date=now_iso)
+        msg = Message(
+            i=idx,
+            kind=kind,
+            text=text,
+            size=size,
+            date=now_iso,
+            workspace=workspace,
+            device=device,
+        )
         line = json.dumps(msg.to_dict(), ensure_ascii=False) + "\n"
         encoded = line.encode("utf-8")
 
@@ -355,7 +402,7 @@ class Storage:
         """Append a batch of messages with durability, grouping by day file.
 
         Each item can be a Message object or a tuple:
-        (kind, text, date_iso_optional, key_optional).
+        (kind, text, date_iso_optional, key_optional, workspace_optional, device_optional).
         Thoughts (reasoning) are NEVER passed here.
         """
         if not items:
@@ -368,10 +415,17 @@ class Storage:
         current_idx = len(self.messages)
 
         for item in items:
+            ws_val = None
+            dev_val = None
             if isinstance(item, Message):
                 kind, text = item.kind, item.text
                 msg_date = item.date
                 msg_key = item.key
+                ws_val = item.workspace
+                dev_val = item.device
+            elif len(item) == 6:
+                kind, text, date_iso, msg_key, ws_val, dev_val = item
+                msg_date = date_iso if date_iso else now_iso_default
             elif len(item) == 4:
                 kind, text, date_iso, msg_key = item
                 msg_date = date_iso if date_iso else now_iso_default
@@ -383,8 +437,18 @@ class Storage:
             if kind == "echo":
                 text = cap_tool_output(text, CAP)
 
-            size = len(f"{kind}: {text}".encode("utf-8"))
-            msg = Message(i=current_idx, kind=kind, text=text, size=size, date=msg_date, key=msg_key)
+            ws_tag = f"[{ws_val}] " if ws_val else ""
+            size = len(f"{kind}: {ws_tag}{text}".encode("utf-8"))
+            msg = Message(
+                i=current_idx,
+                kind=kind,
+                text=text,
+                size=size,
+                date=msg_date,
+                key=msg_key,
+                workspace=ws_val,
+                device=dev_val,
+            )
             current_idx += 1
             created_msgs.append(msg)
 

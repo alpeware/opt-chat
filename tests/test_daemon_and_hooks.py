@@ -477,20 +477,28 @@ async def test_main_turn_auto_capture_on_stop(tmp_path: Path):
         res = await client.call_async("hook_event", event="stop", payload=stop_payload)
         assert res.get("status") == "ok"
 
-        # 2. Check history in memory
+        # 2. Check history in memory (pure text + metadata)
         msgs = client.get_history(limit=10)
         assert len(msgs) == 2
         assert msgs[0]["kind"] == "user"
-        assert "[super-app] Implement authentication flow" in msgs[0]["text"]
+        assert msgs[0]["text"] == "Implement authentication flow"
+        assert msgs[0]["workspace"] == "super-app"
         assert msgs[1]["kind"] == "talk"
-        assert "[super-app] I have completed implementing the auth flow" in msgs[1]["text"]
+        assert msgs[1]["text"] == "I have completed implementing the auth flow with JWT tokens."
+        assert msgs[1]["workspace"] == "super-app"
 
-        # 3. Test workspace filtering in get_history and get_view
+        # 3. Test workspace and category filtering in get_history and get_view
         filtered_msgs = client.get_history(limit=10, workspace="super-app")
         assert len(filtered_msgs) == 2
 
         other_msgs = client.get_history(limit=10, workspace="other-repo")
         assert len(other_msgs) == 0
+
+        main_msgs = client.get_history(limit=10, category="main")
+        assert len(main_msgs) == 2
+
+        subagent_msgs = client.get_history(limit=10, category="subagent")
+        assert len(subagent_msgs) == 0
 
         ws_view = client.get_view(workspace="super-app")
         assert "<chat>" in ws_view

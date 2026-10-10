@@ -101,7 +101,8 @@ async def test_full_session_and_restart(tmp_path: Path):
         await asyncio.sleep(0.02)
 
     last_echo = [m for m in storage2.messages if m.kind == "echo"][-1]
-    assert "0+0|user: First task: initialize database schema" in last_echo.text
+    assert "0+0|user" in last_echo.text
+    assert "First task: initialize database schema" in last_echo.text
 
     compactor2.stop()
     storage2.close()

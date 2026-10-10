@@ -299,10 +299,13 @@ class OptChatWebServer:
         # Discover known workspaces from offline storage
         known_workspaces = set()
         if self.storage and self.storage.messages:
-            for m in self.storage.messages[-200:]:
-                mat = re.match(r"^\[([a-zA-Z0-9_\-\.]+)\]", m.text)
-                if mat:
-                    known_workspaces.add(mat.group(1))
+            for m in self.storage.messages[-300:]:
+                if m.workspace:
+                    known_workspaces.add(m.workspace)
+                else:
+                    mat = re.match(r"^\[([a-zA-Z0-9_\-\.]+)\]", m.text)
+                    if mat:
+                        known_workspaces.add(mat.group(1))
 
         return web.json_response({
             "messages_count": len(self.storage.messages),
@@ -319,18 +322,34 @@ class OptChatWebServer:
     async def handle_api_history(self, request: web.Request) -> web.Response:
         limit = int(request.query.get("limit", "50"))
         ws_filter = request.query.get("workspace")
+        category_filter = request.query.get("category")
         if self.is_daemon_connected and self.engine_client:
-            kwargs = {"limit": limit}
+            kwargs: Dict[str, Any] = {"limit": limit}
             if ws_filter:
                 kwargs["workspace"] = ws_filter
+            if category_filter:
+                kwargs["category"] = category_filter
             res = await self.engine_client.call_async("get_history", **kwargs)
             return web.json_response(res.get("messages", []))
 
         assert self.storage is not None
         storage_msgs = self.storage.messages
         if ws_filter and ws_filter.lower() != "all":
-            tag = f"[{ws_filter.lower()}]"
-            storage_msgs = [m for m in storage_msgs if tag in m.text.lower()]
+            ws_target = ws_filter.lower()
+            storage_msgs = [
+                m for m in storage_msgs
+                if (m.workspace and m.workspace.lower() == ws_target)
+                or (f"[{ws_target}]" in m.text.lower())
+            ]
+        if category_filter and category_filter.lower() != "all":
+            cat = category_filter.lower()
+            if cat == "main":
+                storage_msgs = [m for m in storage_msgs if m.kind in ("user", "talk")]
+            elif cat == "subagent":
+                storage_msgs = [m for m in storage_msgs if m.kind == "work"]
+            elif cat == "note":
+                storage_msgs = [m for m in storage_msgs if m.kind == "note"]
+
         msgs = storage_msgs[-limit:] if limit > 0 else storage_msgs
         result = [
             {
@@ -339,6 +358,8 @@ class OptChatWebServer:
                 "text": m.text,
                 "size": m.size,
                 "date": m.date,
+                "workspace": m.workspace,
+                "device": m.device,
             }
             for m in msgs
             if m.kind in ("user", "talk", "note", "work")

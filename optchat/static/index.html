@@ -40,6 +40,24 @@
       </div>
     </nav>
 
+    <!-- Filter Nav Bar -->
+    <nav id="filter-nav" class="filter-nav">
+      <div class="filter-bar">
+        <div class="category-pills" id="category-pills">
+          <button class="filter-btn active" id="filter-cat-all" onclick="setCategoryFilter('all')">All</button>
+          <button class="filter-btn" id="filter-cat-main" onclick="setCategoryFilter('main')">Main Chat</button>
+          <button class="filter-btn" id="filter-cat-subagent" onclick="setCategoryFilter('subagent')">Subagents</button>
+          <button class="filter-btn" id="filter-cat-note" onclick="setCategoryFilter('note')">Notes</button>
+        </div>
+        <div class="workspace-pill-select" id="workspace-pill-select">
+          <label for="ws-select-dropdown" class="ws-label">🏷️</label>
+          <select id="ws-select-dropdown" onchange="setWorkspaceFilter(this.value)">
+            <option value="all">All Workspaces</option>
+          </select>
+        </div>
+      </div>
+    </nav>
+
     <!-- Chat Messages -->
     <div id="chat-stream">
       <div class="message-row talk">

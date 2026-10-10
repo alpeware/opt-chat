@@ -146,11 +146,79 @@ header {
   align-items: flex-start;
 }
 
+/* Filter Navigation Bar */
+.filter-nav {
+  display: flex;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--card-border);
+  padding: 6px 14px;
+  flex-shrink: 0;
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+  overflow-x: auto;
+}
+
+.category-pills {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.filter-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-dim);
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.filter-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+.filter-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.workspace-pill-select {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+.workspace-pill-select select {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 0.78rem;
+  outline: none;
+  cursor: pointer;
+}
+.workspace-pill-select select option {
+  background: var(--card-bg);
+  color: var(--text);
+}
+
 /* Message Header & Timestamps */
 .message-header {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   margin-bottom: 2px;
   padding: 0 4px;
   max-width: 88%;
@@ -185,6 +253,35 @@ header {
 }
 .note .message-sender {
   color: #d8b4fe;
+}
+
+.message-workspace-badge {
+  font-size: 0.65rem;
+  background: rgba(59, 130, 246, 0.15);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  padding: 1px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+.message-workspace-badge:hover {
+  background: rgba(59, 130, 246, 0.35);
+  color: #dbeafe;
+  border-color: rgba(59, 130, 246, 0.6);
+}
+
+.message-device-badge {
+  font-size: 0.65rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-dim);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 1px 5px;
+  border-radius: 8px;
+  white-space: nowrap;
+  font-weight: 400;
 }
 
 .message-time {

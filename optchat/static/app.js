@@ -439,8 +439,16 @@ function handleStreamEvent(event) {
     const text = event.content;
     const date = (event.extra && event.extra.date) || new Date().toISOString();
     const ws = (event.extra && event.extra.workspace);
-    if (!selectedWorkspace || selectedWorkspace === 'all' || !ws || ws === selectedWorkspace) {
-      appendMessage(kind, text, date, false);
+    const dev = (event.extra && event.extra.device);
+    const wsMatch = (!selectedWorkspace || selectedWorkspace === 'all' || !ws || ws.toLowerCase() === selectedWorkspace.toLowerCase());
+    let catMatch = true;
+    if (selectedCategory && selectedCategory !== 'all') {
+      if (selectedCategory === 'main') catMatch = (kind === 'user' || kind === 'talk');
+      else if (selectedCategory === 'subagent') catMatch = (kind === 'work');
+      else if (selectedCategory === 'note') catMatch = (kind === 'note');
+    }
+    if (wsMatch && catMatch) {
+      appendMessage(kind, text, date, false, null, ws, dev);
       scrollToBottom();
     }
     fetchState();
@@ -458,7 +466,27 @@ function handleStreamEvent(event) {
 
 let currentWorkspace = '';
 let selectedWorkspace = 'all';
+let selectedCategory = 'all';
 let availableWorkspaces = [];
+
+function setCategoryFilter(cat) {
+  selectedCategory = cat || 'all';
+  document.querySelectorAll('#category-pills .filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-category') === selectedCategory);
+  });
+  fetchHistory();
+}
+
+function setWorkspaceFilter(ws) {
+  selectedWorkspace = (ws || 'all').toLowerCase();
+  const sel = document.getElementById('ws-select-dropdown');
+  if (sel) sel.value = selectedWorkspace;
+  const wsEl = document.getElementById('pill-ws');
+  if (wsEl) {
+    wsEl.textContent = selectedWorkspace === 'all' ? '📁 All' : '📁 ' + selectedWorkspace;
+  }
+  fetchHistory();
+}
 
 async function fetchState() {
   try {
@@ -472,6 +500,16 @@ async function fetchState() {
     document.getElementById('status-dot').style.background = data.is_settled ? '#10b981' : '#f59e0b';
     if (data.workspaces && Array.isArray(data.workspaces)) {
       availableWorkspaces = data.workspaces;
+      const sel = document.getElementById('ws-select-dropdown');
+      if (sel) {
+        const cur = sel.value || selectedWorkspace;
+        let opts = '<option value="all">All Workspaces</option>';
+        for (const w of availableWorkspaces) {
+          opts += `<option value="${escapeHtml(w)}">${escapeHtml(w)}</option>`;
+        }
+        sel.innerHTML = opts;
+        sel.value = cur;
+      }
     }
     if (data.workspace) {
       currentWorkspace = data.workspace;
@@ -533,7 +571,8 @@ async function fetchHistory() {
   }
   try {
     const wsQuery = selectedWorkspace && selectedWorkspace !== 'all' ? `&workspace=${encodeURIComponent(selectedWorkspace)}` : '';
-    const res = await fetch(`/api/history?limit=50${wsQuery}`);
+    const catQuery = selectedCategory && selectedCategory !== 'all' ? `&category=${encodeURIComponent(selectedCategory)}` : '';
+    const res = await fetch(`/api/history?limit=50${wsQuery}${catQuery}`);
     if (!res.ok) {
       console.error('Failed to load history:', res.status, res.statusText);
       return;
@@ -589,7 +628,7 @@ async function fetchHistory() {
             });
           }
         }
-        appendMessage(m.kind, m.text, m.date, false, threadId);
+        appendMessage(m.kind, m.text, m.date, false, threadId, m.workspace, m.device);
       });
       renderAgentTabs();
       scrollToBottom();
@@ -878,7 +917,7 @@ function renderBubbleContent(kind, text, threadId = null) {
   `;
 }
 
-function appendMessage(kind, text, dateStr, isStreaming = false, threadId = null) {
+function appendMessage(kind, text, dateStr, isStreaming = false, threadId = null, workspace = null, device = null) {
   const stream = document.getElementById('chat-stream');
   if (!stream) return null;
 
@@ -892,6 +931,28 @@ function appendMessage(kind, text, dateStr, isStreaming = false, threadId = null
   sender.className = 'message-sender';
   sender.textContent = getSenderLabel(kind, text);
   header.appendChild(sender);
+
+  if (workspace) {
+    const wsBadge = document.createElement('span');
+    wsBadge.className = 'message-workspace-badge';
+    wsBadge.textContent = '🏷️ ' + workspace;
+    wsBadge.title = 'Click to filter by workspace: ' + workspace;
+    wsBadge.onclick = (e) => {
+      e.stopPropagation();
+      setWorkspaceFilter(workspace);
+    };
+    header.appendChild(wsBadge);
+  }
+
+  if (device) {
+    const devBadge = document.createElement('span');
+    devBadge.className = 'message-device-badge';
+    const devLower = device.toLowerCase();
+    const devIcon = (devLower.includes('pixel') || devLower.includes('phone') || devLower.includes('android')) ? '📱 ' : '💻 ';
+    devBadge.textContent = devIcon + device;
+    devBadge.title = 'Device: ' + device;
+    header.appendChild(devBadge);
+  }
 
   if (dateStr) {
     const timeEl = document.createElement('span');

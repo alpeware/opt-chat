@@ -24,6 +24,22 @@ from optchat.engine_client import EngineClient
 logger = logging.getLogger("optchat.hooks")
 
 
+def get_caller_cwd() -> Optional[str]:
+    """Find the real caller working directory by inspecting parent processes."""
+    pid = os.getppid()
+    while pid > 1:
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+            if cwd and not cwd.endswith(".gemini/config"):
+                return cwd
+            with open(f"/proc/{pid}/stat", "r") as f:
+                stat = f.read().split()
+                pid = int(stat[3])
+        except Exception:
+            break
+    return None
+
+
 def handle_hook_command(event_name: str) -> None:
     """Execute lifecycle hook command invoked by Antigravity CLI."""
     raw_input = sys.stdin.read()
@@ -33,6 +49,12 @@ def handle_hook_command(event_name: str) -> None:
             payload = json.loads(raw_input)
         except Exception:
             pass
+
+    caller_cwd = get_caller_cwd()
+    if caller_cwd:
+        payload["callerCwd"] = caller_cwd
+        if not payload.get("workspacePaths"):
+            payload["workspacePaths"] = [caller_cwd]
 
     event_normalized = event_name.lower().replace("-", "_")
 

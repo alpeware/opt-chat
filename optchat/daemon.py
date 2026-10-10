@@ -125,6 +125,44 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
     return None
 
 
+def extract_workspace_from_transcript(transcript_path: str) -> Optional[str]:
+    """Inspect transcript.jsonl tool calls to detect workspace directory."""
+    if not transcript_path or not os.path.isfile(transcript_path):
+        return None
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        for line in reversed(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                data = json.loads(stripped)
+            except Exception:
+                continue
+            calls = data.get("tool_calls", [])
+            for c in calls:
+                args = c.get("args", {})
+                cwd = args.get("Cwd")
+                if cwd and isinstance(cwd, str):
+                    clean_cwd = cwd.strip("\"'")
+                    if clean_cwd and not clean_cwd.startswith("/tmp") and "agy_isolated" not in clean_cwd:
+                        return Path(clean_cwd).name
+                tfile = args.get("TargetFile") or args.get("AbsolutePath")
+                if tfile and isinstance(tfile, str):
+                    clean_file = tfile.strip("\"'")
+                    if clean_file and not clean_file.startswith("/tmp") and "agy_isolated" not in clean_file:
+                        p = Path(clean_file).parent
+                        while p != p.parent:
+                            if (p / ".git").exists():
+                                return p.name
+                            p = p.parent
+                        return Path(clean_file).parent.name
+    except Exception as e:
+        logger.debug("Failed extracting workspace from transcript %s: %s", transcript_path, e)
+    return None
+
+
 class OptChatDaemon:
     def __init__(
         self,
@@ -176,6 +214,25 @@ class OptChatDaemon:
                 q.put_nowait(evt)
             except Exception:
                 pass
+
+    def _resolve_workspace_name(self, payload: Dict[str, Any], tpath: Optional[str] = None) -> str:
+        """Auto-detect real workspace name from caller CWD, payload, transcript, or fallbacks."""
+        caller_cwd = payload.get("callerCwd")
+        ws_paths = payload.get("workspacePaths") or []
+        if caller_cwd:
+            p = Path(caller_cwd)
+            if p.name not in ("", "tmp", "config") and not str(p).endswith(".gemini/config") and "agy_isolated" not in str(p):
+                return p.name
+        if ws_paths and ws_paths[0]:
+            p = Path(ws_paths[0])
+            if p.name not in ("", "tmp", "config") and not str(p).endswith(".gemini/config") and "agy_isolated" not in str(p):
+                return p.name
+        if tpath:
+            from_tpath = extract_workspace_from_transcript(tpath)
+            if from_tpath:
+                return from_tpath
+        ws_target = (str(self.workspace) if self.workspace else None) or os.getcwd()
+        return Path(ws_target).name if ws_target else "general"
 
     async def _start_web_server(self) -> None:
         """Start the responsive web interface as a managed child subprocess."""
@@ -443,10 +500,13 @@ class OptChatDaemon:
             # Discover known workspaces from recent messages
             known_workspaces = set()
             if self.storage and self.storage.messages:
-                for m in self.storage.messages[-200:]:
-                    mat = re.match(r"^\[([a-zA-Z0-9_\-\.]+)\]", m.text)
-                    if mat:
-                        known_workspaces.add(mat.group(1))
+                for m in self.storage.messages[-300:]:
+                    if m.workspace:
+                        known_workspaces.add(m.workspace)
+                    else:
+                        mat = re.match(r"^\[([a-zA-Z0-9_\-\.]+)\]", m.text)
+                        if mat:
+                            known_workspaces.add(mat.group(1))
 
             return {
                 "status": "ok",
@@ -499,11 +559,25 @@ class OptChatDaemon:
         elif action == "get_history":
             limit = int(req.get("limit", 30))
             ws_filter = req.get("workspace")
+            category_filter = req.get("category")
             msgs = self.storage.messages if self.storage.messages else []
 
             if ws_filter and ws_filter.lower() != "all":
-                tag = f"[{ws_filter.lower()}]"
-                msgs = [m for m in msgs if tag in m.text.lower()]
+                ws_target = ws_filter.lower()
+                msgs = [
+                    m for m in msgs
+                    if (m.workspace and m.workspace.lower() == ws_target)
+                    or (f"[{ws_target}]" in m.text.lower())
+                ]
+
+            if category_filter and category_filter.lower() != "all":
+                cat = category_filter.lower()
+                if cat == "main":
+                    msgs = [m for m in msgs if m.kind in ("user", "talk")]
+                elif cat == "subagent":
+                    msgs = [m for m in msgs if m.kind == "work"]
+                elif cat == "note":
+                    msgs = [m for m in msgs if m.kind == "note"]
 
             recent = msgs[-limit:] if msgs else []
             return {
@@ -515,6 +589,8 @@ class OptChatDaemon:
                         "text": m.text,
                         "size": m.size,
                         "date": m.date,
+                        "workspace": m.workspace,
+                        "device": m.device,
                     }
                     for m in recent
                 ],
@@ -523,26 +599,28 @@ class OptChatDaemon:
         elif action == "append_message":
             kind = req.get("kind", "note")
             text = req.get("text", "")
+            workspace = req.get("workspace")
+            device = req.get("device")
             if not text:
                 return {"status": "error", "error": "Text cannot be empty"}
-            msg = self.storage.append_message(kind, text)
+            msg = self.storage.append_message(kind, text, workspace=workspace, device=device)
             self.view.on_new_message(msg.i)
             if self.compactor:
                 self.compactor.pump()
             self.broadcast(
                 "new_message",
                 text,
-                extra={"kind": kind, "i": msg.i, "date": msg.date},
+                extra={
+                    "kind": kind,
+                    "i": msg.i,
+                    "date": msg.date,
+                    "workspace": msg.workspace,
+                    "device": msg.device,
+                },
             )
             return {
                 "status": "ok",
-                "message": {
-                    "i": msg.i,
-                    "kind": msg.kind,
-                    "text": msg.text,
-                    "size": msg.size,
-                    "date": msg.date,
-                },
+                "message": msg.to_dict(),
             }
 
         elif action == "zoom":
@@ -552,8 +630,22 @@ class OptChatDaemon:
             if n == 1:
                 msg = self.storage.get_message(i)
                 if msg:
-                    out = f"Verbatim Message {id_} ({msg.kind}):\n{msg.text}"
-                    msg_dict = {"i": msg.i, "kind": msg.kind, "text": msg.text, "date": msg.date}
+                    meta_parts = []
+                    if msg.workspace:
+                        meta_parts.append(f"workspace: {msg.workspace}")
+                    if msg.device:
+                        meta_parts.append(f"device: {msg.device}")
+                    meta_parts.append(f"date: {msg.date}")
+                    meta_str = f" [{', '.join(meta_parts)}]" if meta_parts else ""
+                    out = f"Verbatim Message {id_} ({msg.kind}){meta_str}:\n{msg.text}"
+                    msg_dict = {
+                        "i": msg.i,
+                        "kind": msg.kind,
+                        "text": msg.text,
+                        "date": msg.date,
+                        "workspace": msg.workspace,
+                        "device": msg.device,
+                    }
                 else:
                     out = f"Message {id_} not found."
                     msg_dict = None
@@ -809,13 +901,14 @@ class OptChatDaemon:
                                     already_logged = True
                                     break
                         if not already_logged:
+                            sub_ws = self._resolve_workspace_name(payload, tpath)
                             self.broadcast(
                                 "subagent_report",
                                 f"[{sub_role}] {clean_rep}",
-                                extra={"role": sub_role, "report": clean_rep, "conversationId": conv_id},
+                                extra={"role": sub_role, "report": clean_rep, "workspace": sub_ws, "conversationId": conv_id},
                             )
                             if self.storage and self.view:
-                                work_msg = self.storage.append_message("work", f"[{sub_role}] {clean_rep}")
+                                work_msg = self.storage.append_message("work", f"[{sub_role}] {clean_rep}", workspace=sub_ws)
                                 self.view.on_new_message(work_msg.i)
 
                 if self.compactor:
@@ -839,8 +932,7 @@ class OptChatDaemon:
                         clean_user = turn_info["user"].strip()
                         clean_reply = clean_message_text(turn_info["reply"]).strip()
 
-                        ws_target = workspace or (str(self.workspace) if self.workspace else os.getcwd())
-                        ws_name = Path(ws_target).name if ws_target else "general"
+                        ws_name = self._resolve_workspace_name(payload, tpath)
                         if ws_name.startswith("agy_isolated") or "agy_isolated" in ws_name or ws_name == ".compactor_workspace":
                             self._logged_turn_steps[conv_id] = step_idx
                             return {"status": "ok", "ignored": "synthetic_workspace"}
@@ -854,13 +946,10 @@ class OptChatDaemon:
                                     break
 
                         if not already_logged and self.storage and self.view:
-                            user_entry = f"[{ws_name}] {clean_user}"
-                            talk_entry = f"[{ws_name}] {clean_reply}"
-
-                            msg1 = self.storage.append_message("user", user_entry)
+                            msg1 = self.storage.append_message("user", clean_user, workspace=ws_name)
                             self.view.on_new_message(msg1.i)
 
-                            msg2 = self.storage.append_message("talk", talk_entry)
+                            msg2 = self.storage.append_message("talk", clean_reply, workspace=ws_name)
                             self.view.on_new_message(msg2.i)
 
                             self._logged_turn_steps[conv_id] = step_idx
@@ -868,13 +957,27 @@ class OptChatDaemon:
 
                             self.broadcast(
                                 "new_message",
-                                user_entry,
-                                extra={"kind": "user", "i": msg1.i, "workspace": ws_name, "conversationId": conv_id, "date": msg1.date},
+                                clean_user,
+                                extra={
+                                    "kind": "user",
+                                    "i": msg1.i,
+                                    "workspace": ws_name,
+                                    "device": msg1.device,
+                                    "conversationId": conv_id,
+                                    "date": msg1.date,
+                                },
                             )
                             self.broadcast(
                                 "new_message",
-                                talk_entry,
-                                extra={"kind": "talk", "i": msg2.i, "workspace": ws_name, "conversationId": conv_id, "date": msg2.date},
+                                clean_reply,
+                                extra={
+                                    "kind": "talk",
+                                    "i": msg2.i,
+                                    "workspace": ws_name,
+                                    "device": msg2.device,
+                                    "conversationId": conv_id,
+                                    "date": msg2.date,
+                                },
                             )
                             self.broadcast(
                                 "turn_complete",

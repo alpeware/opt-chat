@@ -53,10 +53,11 @@ def flatten_newlines(text: str) -> str:
 
 def check_free_level0(msg: Message) -> Optional[str]:
     """Free node at level 0: verbatim text if <= NODE bytes (§3)."""
-    if msg.kind == "user" and msg.text.startswith("[") and "] " in msg.text[:40]:
-        raw = f"work: {msg.text}"
+    ws_tag = f"[{msg.workspace}] " if msg.workspace else ""
+    if msg.kind == "user" and (msg.workspace or (msg.text.startswith("[") and "] " in msg.text[:40])):
+        raw = f"work: {ws_tag}{msg.text}"
     else:
-        raw = f"{msg.kind}: {msg.text}"
+        raw = f"{msg.kind}: {ws_tag}{msg.text}"
     if len(raw.encode("utf-8")) <= NODE:
         return raw
     return None
@@ -132,7 +133,14 @@ def execute_zoom(storage: Storage, id_: int, n: int) -> str:
         msg = storage.get_message(id_)
         if msg is None:
             return f"No line {id_}+{n}."
-        return f"{id_}+0|{msg.kind}: {msg.text}"
+        meta_parts = []
+        if msg.workspace:
+            meta_parts.append(f"workspace: {msg.workspace}")
+        if msg.device:
+            meta_parts.append(f"device: {msg.device}")
+        meta_parts.append(f"date: {msg.date}")
+        meta_str = f" [{', '.join(meta_parts)}]" if meta_parts else ""
+        return f"{id_}+0|{msg.kind}{meta_str}:\n{msg.text}"
 
     l, i = node_coords(id_, n)
     child_l = l - 1

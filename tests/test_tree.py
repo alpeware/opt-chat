@@ -72,12 +72,15 @@ def test_zoom_and_date(tmp_path: Path):
     # Level 1 node
     storage.save_node(1, 0, "conversation between user and agent")
 
-    # zoom(id=0, n=1) -> verbatim message id+0|kind: text
+    # zoom(id=0, n=1) -> verbatim message id+0|kind [metadata]:\ntext
     res1 = execute_zoom(storage, 0, 1)
-    assert res1 == "0+0|user: Hello world"
+    assert res1.startswith("0+0|user")
+    assert "Hello world" in res1
+    assert "date:" in res1
 
     res2 = execute_zoom(storage, 1, 1)
-    assert res2 == "1+0|talk: Hi there, how can I help?"
+    assert res2.startswith("1+0|talk")
+    assert "Hi there, how can I help?" in res2
 
     # zoom(id=0, n=2) -> opens into children
     res_pair = execute_zoom(storage, 0, 2)

@@ -38,7 +38,8 @@ async def test_mcp_server_tools_and_calls(tmp_path: Path):
 
     # Test optchat_zoom (n=1)
     zoom_res = await server.handle_tool_call("optchat_zoom", {"id": 0, "n": 1})
-    assert "0+0|note: Architectural decision: use OptChat tree memory" in zoom_res
+    assert "0+0|note" in zoom_res
+    assert "Architectural decision: use OptChat tree memory" in zoom_res
 
     # Test optchat_date
     date_res = await server.handle_tool_call("optchat_date", {"id": 0})
