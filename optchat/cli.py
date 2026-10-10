@@ -273,7 +273,7 @@ def main() -> None:
 
     # web command
     web_parser = subparsers.add_parser("web", help="Start the responsive mobile/desktop web interface")
-    web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to listen on (default: 127.0.0.1 for browser Secure Context voice dictation)")
+    web_parser.add_argument("--host", default="0.0.0.0", help="Host interface to listen on (default: 0.0.0.0)")
     web_parser.add_argument("--port", type=int, default=8765, help="Port to listen on (default: 8765)")
     web_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
     web_parser.add_argument("--provider", default="agy", choices=["agy", "mock"], help="LLM Provider (default: agy)")
@@ -281,6 +281,37 @@ def main() -> None:
     web_parser.add_argument("--compactor-model", default=None, help="Compactor model name (e.g. gemini-3.8-flash-low)")
     web_parser.add_argument("--workspace", default=None, help="Workspace directory for agy execution (default: opt-chat)")
     web_parser.add_argument("--conversation", default=None, help="Antigravity conversation ID to resume")
+
+    # view command
+    view_parser = subparsers.add_parser("view", help="Display the live compressed memory tree (<chat>...</chat>)")
+    view_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+
+    # zoom command
+    zoom_parser = subparsers.add_parser("zoom", help="Drill down into a summary line or retrieve verbatim message (n=1)")
+    zoom_parser.add_argument("id", type=int, help="Message id at start of line")
+    zoom_parser.add_argument("n", type=int, nargs="?", default=1, help="Span size (default: 1 for verbatim message)")
+    zoom_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+
+    # date command
+    date_parser = subparsers.add_parser("date", help="Get recording timestamp for a message id")
+    date_parser.add_argument("id", type=int, help="Message id to query")
+    date_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+
+    # log command
+    log_parser = subparsers.add_parser("log", help="Append a note, milestone, or message to OptChat persistent memory")
+    log_parser.add_argument("text", nargs="?", default=None, help="Text content to record (reads from stdin if omitted)")
+    log_parser.add_argument("--kind", default="note", choices=["note", "user", "talk"], help="Kind of entry (default: note)")
+    log_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+
+    # stats command
+    stats_parser = subparsers.add_parser("stats", help="Show OptChat memory statistics, tree size, and settlement status")
+    stats_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
+
+    # history command
+    history_parser = subparsers.add_parser("history", help="Show recent message history")
+    history_parser.add_argument("--limit", type=int, default=20, help="Number of messages to display (default: 20)")
+    history_parser.add_argument("--kind", default=None, choices=["note", "user", "talk", "work"], help="Filter by message kind")
+    history_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
 
     # device command
     device_parser = subparsers.add_parser(
@@ -305,6 +336,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
+
     if args.subcommand == "mcp":
         from optchat.mcp_server import OptChatMCPServer
         server = OptChatMCPServer(Path(args.chat_dir))
@@ -328,6 +360,165 @@ def main() -> None:
                 console.print(f"[green]HTML report exported to {out_path}[/green]")
             finally:
                 storage.close()
+
+    elif args.subcommand == "view":
+        from optchat.engine_client import EngineClient
+        chat_dir = Path(args.chat_dir)
+        client = EngineClient(socket_path=chat_dir / "engine.sock")
+        if client.is_daemon_alive():
+            view_text = client.get_view()
+        else:
+            storage = Storage(chat_dir)
+            storage.open(acquire_lock=False)
+            try:
+                view = LiveView(storage)
+                view.rebuild()
+                view_text = view.render()
+            finally:
+                storage.close()
+        print(view_text)
+
+    elif args.subcommand == "zoom":
+        from optchat.engine_client import EngineClient
+        chat_dir = Path(args.chat_dir)
+        client = EngineClient(socket_path=chat_dir / "engine.sock")
+        if client.is_daemon_alive():
+            out = client.zoom(args.id, args.n)
+        else:
+            storage = Storage(chat_dir)
+            storage.open(acquire_lock=False)
+            try:
+                from optchat.tree import execute_zoom
+                out = execute_zoom(storage, args.id, args.n)
+            finally:
+                storage.close()
+        print(out)
+
+    elif args.subcommand == "date":
+        from optchat.engine_client import EngineClient
+        chat_dir = Path(args.chat_dir)
+        client = EngineClient(socket_path=chat_dir / "engine.sock")
+        if client.is_daemon_alive():
+            out = client.date(args.id)
+        else:
+            storage = Storage(chat_dir)
+            storage.open(acquire_lock=False)
+            try:
+                from optchat.tree import execute_date
+                out = execute_date(storage, args.id)
+                if out and not out.startswith("No message") and not out.startswith("Message"):
+                    out = f"Message {args.id}: {out}"
+            finally:
+                storage.close()
+        print(out)
+
+    elif args.subcommand == "log":
+        from optchat.engine_client import EngineClient
+        chat_dir = Path(args.chat_dir)
+        text = args.text
+        if not text:
+            if not sys.stdin.isatty():
+                text = sys.stdin.read().strip()
+            else:
+                console.print("[red]Error: Message text required or provide via stdin.[/red]")
+                return
+        if not text:
+            console.print("[red]Error: Message text cannot be empty.[/red]")
+            return
+
+        client = EngineClient(socket_path=chat_dir / "engine.sock")
+        if client.is_daemon_alive():
+            res = client.append_message(args.kind, text)
+            m = res.get("message", {})
+            console.print(f"[green]Logged message #{m.get('i')} [{m.get('kind')}]: {text[:80]}...[/green]")
+        else:
+            storage = Storage(chat_dir)
+            try:
+                storage.open(acquire_lock=True)
+            except RuntimeError:
+                storage.open(acquire_lock=False)
+            try:
+                msg = storage.append_message(args.kind, text)
+                view = LiveView(storage)
+                view.rebuild()
+                console.print(f"[green]Logged message #{msg.i} [{msg.kind}]: {text[:80]}...[/green]")
+            finally:
+                storage.close()
+
+    elif args.subcommand == "stats":
+        from optchat.engine_client import EngineClient
+        chat_dir = Path(args.chat_dir)
+        client = EngineClient(socket_path=chat_dir / "engine.sock")
+        if client.is_daemon_alive():
+            st = client.get_state()
+            size = st.get("view_size", 0)
+            budget = st.get("view_budget", VIEW)
+            pct = round((size / budget) * 100, 1) if budget else 0
+            web_info = st.get("web_server")
+            console.print(f"[bold cyan]OptChat Memory Stats (via Daemon):[/bold cyan]")
+            console.print(f"  • Socket:      {client.socket_path}")
+            console.print(f"  • Messages:    {st.get('messages_count', 0)}")
+            console.print(f"  • Tree Nodes:  {st.get('tree_nodes_count', 0)}")
+            console.print(f"  • View Size:   {size} / {budget} bytes ({pct}%)")
+            console.print(f"  • Settled:     {st.get('is_settled', True)}")
+            if web_info and web_info.get("enabled"):
+                web_status = "[green]running[/green]" if web_info.get("running") else "[red]stopped[/red]"
+                console.print(f"  • Web Server:  {web_status} on http://{web_info.get('host')}:{web_info.get('port')} (PID {web_info.get('pid')})")
+        else:
+            storage = Storage(chat_dir)
+            storage.open(acquire_lock=False)
+            try:
+                view = LiveView(storage)
+                view.rebuild()
+                size = view.compute_size()
+                pct = round((size / VIEW) * 100, 1)
+                console.print(f"[bold cyan]OptChat Memory Stats (Offline Storage):[/bold cyan]")
+                console.print(f"  • Directory:   {chat_dir}")
+                console.print(f"  • Messages:    {len(storage.messages)}")
+                console.print(f"  • Tree Nodes:  {len(storage.tree)}")
+                console.print(f"  • View Size:   {size} / {VIEW} bytes ({pct}%)")
+                console.print(f"  • Settled:     {view.is_settled()}")
+            finally:
+                storage.close()
+
+    elif args.subcommand == "history":
+        from optchat.engine_client import EngineClient
+        chat_dir = Path(args.chat_dir)
+        client = EngineClient(socket_path=chat_dir / "engine.sock")
+        if client.is_daemon_alive():
+            msgs = client.get_history(limit=args.limit)
+        else:
+            storage = Storage(chat_dir)
+            storage.open(acquire_lock=False)
+            try:
+                msgs = [
+                    {
+                        "i": m.i,
+                        "kind": m.kind,
+                        "text": m.text,
+                        "size": m.size,
+                        "date": m.date,
+                    }
+                    for m in storage.messages[-args.limit:]
+                ]
+            finally:
+                storage.close()
+
+        if args.kind:
+            msgs = [m for m in msgs if m.get("kind") == args.kind]
+
+        if not msgs:
+            console.print(f"[yellow]No messages found.[/yellow]")
+        else:
+            console.print(f"[bold cyan]Recent Messages (showing {len(msgs)}):[/bold cyan]")
+            for m in msgs:
+                kind = m.get("kind", "note")
+                kind_style = "cyan" if kind == "user" else ("green" if kind == "talk" else ("yellow" if kind == "note" else "magenta"))
+                dt = m.get("date", "")
+                text_preview = m.get("text", "").replace("\n", " ")
+                if len(text_preview) > 120:
+                    text_preview = text_preview[:117] + "..."
+                console.print(f"  [dim]#{m.get('i', 0):>3}[/dim] [{kind_style}][{kind}][/{kind_style}] [dim]{dt}[/dim] {text_preview}", soft_wrap=True)
 
     elif args.subcommand == "import":
         storage = Storage(Path(args.chat_dir))

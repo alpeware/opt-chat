@@ -236,77 +236,95 @@ class OptChatMCPServer:
         protocol = asyncio.StreamReaderProtocol(reader)
         await loop.connect_read_pipe(lambda: protocol, sys.stdin)
 
-        while True:
-            line_bytes = await reader.readline()
-            if not line_bytes:
-                break
-            line = line_bytes.decode("utf-8").strip()
-            if not line:
-                continue
+        # Watch parent PID so MCP server terminates immediately if the parent (agy) dies
+        initial_ppid = os.getppid()
 
-            try:
-                req = json.loads(line)
-            except Exception:
-                continue
+        async def _watch_parent():
+            if initial_ppid == 1:
+                return
+            while True:
+                await asyncio.sleep(2.0)
+                curr_ppid = os.getppid()
+                if curr_ppid != initial_ppid or curr_ppid == 1:
+                    sys.exit(0)
 
-            req_id = req.get("id")
-            method = req.get("method")
-            params = req.get("params", {})
+        watcher_task = asyncio.create_task(_watch_parent())
 
-            if method == "initialize":
-                res = {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "optchat", "version": "0.1.0"},
-                    },
-                }
-                self._send(res)
+        try:
+            while True:
+                line_bytes = await reader.readline()
+                if not line_bytes:
+                    break
+                line = line_bytes.decode("utf-8").strip()
+                if not line:
+                    continue
 
-            elif method == "notifications/initialized":
-                pass
-
-            elif method == "ping":
-                self._send({"jsonrpc": "2.0", "id": req_id, "result": {}})
-
-            elif method == "tools/list":
-                tools = self.get_tools_list()
-                res = {"jsonrpc": "2.0", "id": req_id, "result": {"tools": tools}}
-                self._send(res)
-
-            elif method == "tools/call":
-                tool_name = params.get("name", "")
-                tool_args = params.get("arguments", {})
                 try:
-                    result_text = await self.handle_tool_call(tool_name, tool_args)
-                    res = {
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "result": {
-                            "content": [{"type": "text", "text": result_text}],
-                            "isError": False,
-                        },
-                    }
-                except Exception as e:
-                    res = {
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "result": {
-                            "content": [{"type": "text", "text": f"Error: {e}"}],
-                            "isError": True,
-                        },
-                    }
-                self._send(res)
+                    req = json.loads(line)
+                except Exception:
+                    continue
 
-            else:
-                if req_id is not None:
-                    self._send({
+                req_id = req.get("id")
+                method = req.get("method")
+                params = req.get("params", {})
+
+                if method == "initialize":
+                    res = {
                         "jsonrpc": "2.0",
                         "id": req_id,
-                        "error": {"code": -32601, "message": f"Method not found: {method}"},
-                    })
+                        "result": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "optchat", "version": "0.1.0"},
+                        },
+                    }
+                    self._send(res)
+
+                elif method == "notifications/initialized":
+                    pass
+
+                elif method == "ping":
+                    self._send({"jsonrpc": "2.0", "id": req_id, "result": {}})
+
+                elif method == "tools/list":
+                    tools = self.get_tools_list()
+                    res = {"jsonrpc": "2.0", "id": req_id, "result": {"tools": tools}}
+                    self._send(res)
+
+                elif method == "tools/call":
+                    tool_name = params.get("name", "")
+                    tool_args = params.get("arguments", {})
+                    try:
+                        result_text = await self.handle_tool_call(tool_name, tool_args)
+                        res = {
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {
+                                "content": [{"type": "text", "text": result_text}],
+                                "isError": False,
+                            },
+                        }
+                    except Exception as e:
+                        res = {
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": {
+                                "content": [{"type": "text", "text": f"Error: {e}"}],
+                                "isError": True,
+                            },
+                        }
+                    self._send(res)
+
+                else:
+                    if req_id is not None:
+                        self._send({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {"code": -32601, "message": f"Method not found: {method}"},
+                        })
+        finally:
+            watcher_task.cancel()
+
 
     def _send(self, payload: Dict[str, Any]) -> None:
         out = json.dumps(payload, ensure_ascii=False) + "\n"

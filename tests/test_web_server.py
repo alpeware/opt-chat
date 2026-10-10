@@ -77,6 +77,27 @@ async def test_web_server_endpoints(tmp_path: Path):
         data = await res.json()
         assert "Hello world from test" in data["output"]
 
+        # 6. Test /mcp GET (endpoint descriptor)
+        res = await client.get("/mcp")
+        assert res.status == 200
+        mcp_meta = await res.json()
+        assert mcp_meta["service"] == "optchat-mcp-server"
+        assert len(mcp_meta["tools"]) >= 6
+
+        # 7. Test /mcp POST (JSON-RPC tools/call)
+        res = await client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "optchat_zoom", "arguments": {"id": 0, "n": 1}},
+            },
+        )
+        assert res.status == 200
+        rpc_res = await res.json()
+        assert "Hello world from test" in rpc_res["result"]["content"][0]["text"]
+
     finally:
         await client.close()
         server.shutdown()

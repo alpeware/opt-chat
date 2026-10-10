@@ -182,6 +182,14 @@ class EngineClient:
         res = await self.call_async("date", id=id_)
         return res.get("output", "")
 
+    def get_history(self, limit: int = 30) -> List[Dict[str, Any]]:
+        res = self.call("get_history", limit=limit)
+        return res.get("messages", [])
+
+    async def get_history_async(self, limit: int = 30) -> List[Dict[str, Any]]:
+        res = await self.call_async("get_history", limit=limit)
+        return res.get("messages", [])
+
     def rebuild(self) -> Dict[str, Any]:
         return self.call("rebuild")
 

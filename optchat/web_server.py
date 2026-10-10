@@ -172,8 +172,11 @@ class OptChatWebServer:
         self.app.router.add_post("/api/command", self.handle_api_command)
         self.app.router.add_post("/api/zoom", self.handle_api_zoom)
         self.app.router.add_post("/api/voice", self.handle_api_voice)
+        self.app.router.add_get("/mcp", self.handle_mcp_get)
+        self.app.router.add_post("/mcp", self.handle_mcp_post)
 
     async def handle_api_stream(self, request: web.Request) -> web.StreamResponse:
+
         response = web.StreamResponse(
             status=200,
             reason="OK",
@@ -559,7 +562,80 @@ class OptChatWebServer:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=400)
 
+    async def handle_mcp_get(self, request: web.Request) -> web.Response:
+        """Return MCP service descriptor and tools list."""
+        from optchat.mcp_server import OptChatMCPServer
+        mcp = OptChatMCPServer(self.chat_dir)
+        return web.json_response({
+            "service": "optchat-mcp-server",
+            "version": "0.1.0",
+            "transport": "HTTP-POST-JSON-RPC",
+            "endpoint": "/mcp",
+            "tools": mcp.get_tools_list(),
+        })
+
+    async def handle_mcp_post(self, request: web.Request) -> web.Response:
+        """Handle Model Context Protocol JSON-RPC requests over HTTP."""
+        try:
+            req = await request.json()
+        except Exception:
+            return web.json_response({"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}}, status=400)
+
+        from optchat.mcp_server import OptChatMCPServer
+        mcp = OptChatMCPServer(self.chat_dir)
+        mcp.initialize_backend()
+
+        req_id = req.get("id")
+        method = req.get("method")
+        params = req.get("params", {})
+
+        if method == "initialize":
+            res = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "optchat", "version": "0.1.0"},
+                },
+            }
+        elif method in ("ping", "notifications/initialized"):
+            res = {"jsonrpc": "2.0", "id": req_id, "result": {}}
+        elif method == "tools/list":
+            tools = mcp.get_tools_list()
+            res = {"jsonrpc": "2.0", "id": req_id, "result": {"tools": tools}}
+        elif method == "tools/call":
+            tool_name = params.get("name", "")
+            tool_args = params.get("arguments", {})
+            try:
+                result_text = await mcp.handle_tool_call(tool_name, tool_args)
+                res = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": result_text}],
+                        "isError": False,
+                    },
+                }
+            except Exception as e:
+                res = {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": f"Error: {e}"}],
+                        "isError": True,
+                    },
+                }
+        else:
+            res = {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32601, "message": f"Method not found: {method}"},
+            }
+        return web.json_response(res)
+
     def shutdown(self) -> None:
+
         if self._daemon_event_task and not self._daemon_event_task.done():
             self._daemon_event_task.cancel()
         if not self.is_daemon_connected:
