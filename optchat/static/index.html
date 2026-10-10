@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
   <title>OptChat Web</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-  <link rel="stylesheet" href="/static/style.css?v=20261010-03">
+  <link rel="stylesheet" href="/static/style.css?v=20261010-04">
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script src="/static/app.js?v=20261010-03" defer></script>
+  <script src="/static/app.js?v=20261010-04" defer></script>
 </head>
 <body>
   <div id="app">
@@ -18,7 +18,6 @@
         <span>OptChat</span>
       </div>
       <div class="stats-pills" id="stats-bar">
-        <span class="pill" id="pill-ws" title="Click to view/change workspace" onclick="openSessionModal()">📁 opt-chat</span>
         <span class="pill" id="pill-msgs" onclick="openStats()">Msgs: -</span>
         <span class="pill" id="pill-nodes" onclick="openStats()">Nodes: -</span>
         <span class="pill" id="pill-view" onclick="openStats()">View: -</span>
@@ -30,38 +29,26 @@
       </div>
     </header>
 
-    <!-- Subagent Workspace Tab Bar -->
-    <nav id="agent-tabs" class="agent-tabs-nav">
-      <div class="tabs-scroll-container" id="tabs-container">
-        <button class="agent-tab active" id="tab-btn-main" onclick="switchAgentTab('main')">
-          <span class="tab-icon">💬</span>
-          <span class="tab-label">Main Chat</span>
-        </button>
-      </div>
-    </nav>
-
     <!-- Filter Nav Bar -->
     <nav id="filter-nav" class="filter-nav">
-      <div class="filter-bar">
-        <div class="filter-group">
-          <span class="filter-group-label">View:</span>
-          <div class="category-pills" id="category-pills">
-            <button type="button" class="filter-btn active" id="filter-cat-all" data-category="all" onclick="setCategoryFilter('all')">All</button>
-            <button type="button" class="filter-btn" id="filter-cat-main" data-category="main" onclick="setCategoryFilter('main')">💬 Main Chat</button>
-            <button type="button" class="filter-btn" id="filter-cat-subagent" data-category="subagent" onclick="setCategoryFilter('subagent')">🤖 Subagents</button>
-            <button type="button" class="filter-btn" id="filter-cat-note" data-category="note" onclick="setCategoryFilter('note')">📝 Notes</button>
-          </div>
+      <div class="filter-row filter-row-view">
+        <span class="filter-group-label">View:</span>
+        <div class="category-pills" id="category-pills">
+          <button type="button" class="filter-btn active" id="filter-cat-all" data-category="all" onclick="setCategoryFilter('all')">All</button>
+          <button type="button" class="filter-btn" id="filter-cat-main" data-category="main" onclick="setCategoryFilter('main')">💬 Main Chat</button>
+          <button type="button" class="filter-btn" id="filter-cat-subagent" data-category="subagent" onclick="setCategoryFilter('subagent')">🤖 Subagents</button>
+          <button type="button" class="filter-btn" id="filter-cat-note" data-category="note" onclick="setCategoryFilter('note')">📝 Notes</button>
         </div>
-        <div class="filter-group">
-          <span class="filter-group-label">Workspace:</span>
-          <div class="workspace-pills" id="workspace-pills">
-            <button type="button" class="filter-btn active" data-workspace="all" onclick="setWorkspaceFilter('all')">🏷️ All</button>
-          </div>
-          <div class="workspace-pill-select" id="workspace-pill-select" title="Workspace selector dropdown">
-            <select id="ws-select-dropdown" onchange="setWorkspaceFilter(this.value)">
-              <option value="all">All Workspaces</option>
-            </select>
-          </div>
+      </div>
+      <div class="filter-row filter-row-workspace">
+        <span class="filter-group-label">Workspace:</span>
+        <div class="workspace-pills" id="workspace-pills">
+          <button type="button" class="filter-btn active" data-workspace="all" onclick="setWorkspaceFilter('all')">🏷️ All</button>
+        </div>
+        <div class="workspace-pill-select" id="workspace-pill-select" title="Workspace selector dropdown">
+          <select id="ws-select-dropdown" onchange="setWorkspaceFilter(this.value)">
+            <option value="all">All Workspaces</option>
+          </select>
         </div>
       </div>
     </nav>
@@ -77,9 +64,6 @@
         </div>
       </div>
     </div>
-
-    <!-- Subagent Workspace Stream -->
-    <div id="subagent-stream" style="display: none;"></div>
 
     <!-- Input Footer -->
     <footer>

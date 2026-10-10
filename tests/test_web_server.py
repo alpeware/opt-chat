@@ -131,6 +131,25 @@ async def test_web_server_endpoints(tmp_path: Path):
         res_403 = await client.get("/api/file?path=/etc/shadow")
         assert res_403.status == 403
 
+        # 9. Test workspace resolution
+        assert server.resolve_workspace_dir("all") == server.workspace
+        assert server.resolve_workspace_dir("desk") == server.workspace
+        assert server.resolve_workspace_dir("opt-chat").name == "opt-chat"
+        assert server.resolve_workspace_dir("gemma-4-developer-agent").name == "gemma-4-developer-agent"
+
+        # 10. Test /api/chat with workspace parameters
+        res_chat_all = await client.post("/api/chat", json={"message": "Hello desk", "workspace": "all"})
+        assert res_chat_all.status == 200
+        data_all = await res_chat_all.json()
+        assert data_all["status"] == "queued"
+        assert data_all["workspace"] == "all"
+
+        res_chat_ws = await client.post("/api/chat", json={"message": "Hello opt-chat", "workspace": "opt-chat"})
+        assert res_chat_ws.status == 200
+        data_ws = await res_chat_ws.json()
+        assert data_ws["status"] == "queued"
+        assert data_ws["workspace"] == "opt-chat"
+
     finally:
         await client.close()
         server.shutdown()

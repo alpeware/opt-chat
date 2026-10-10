@@ -17,6 +17,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import sys
 from typing import Any, Dict, List, Optional, Set
@@ -58,9 +59,11 @@ class OptChatWebServer:
         self.compactor_model = compactor_model
         self.timeout = timeout
 
-        default_ws = Path("/home/simonpure/src/alpeware/opt-chat")
-        self.workspace = (Path(workspace).resolve() if workspace else (default_ws if default_ws.exists() else Path.cwd())).resolve()
+        default_ws = Path.home() / "desk"
+        self.default_workspace = (Path(workspace).resolve() if workspace else (default_ws if default_ws.exists() else Path.cwd())).resolve()
+        self.workspace = self.default_workspace
         self.conversation_id: Optional[str] = conversation_id
+        self.agy_path = shutil.which("agy") or "/home/simonpure/.local/bin/agy"
 
         self.engine_client: Optional[EngineClient] = None
         self.is_daemon_connected: bool = False
@@ -631,8 +634,147 @@ class OptChatWebServer:
             "lines": lines,
         })
 
+    def broadcast_stream_event(self, event_type: str, content: str, extra: Optional[Dict[str, Any]] = None) -> None:
+        """Broadcast an event to all connected /api/stream clients."""
+        event_obj = {"type": event_type, "content": content}
+        if extra:
+            event_obj.update(extra)
+        for q in list(self._active_stream_queues):
+            try:
+                q.put_nowait(event_obj)
+            except Exception:
+                pass
+
+    def resolve_workspace_dir(self, ws_name: str) -> Path:
+        """Resolve workspace name to its directory path on disk."""
+        ws_clean = ws_name.strip()
+        if not ws_clean or ws_clean in ("all", "desk"):
+            return self.workspace
+
+        # 1. Exact path if provided
+        p = Path(ws_clean).expanduser().resolve()
+        if p.is_dir():
+            return p
+
+        # 2. Check if matches current workspace
+        if self.workspace and self.workspace.name.lower() == ws_clean.lower() and self.workspace.is_dir():
+            return self.workspace
+
+        # 3. Search common project directories
+        home = Path.home()
+        candidates = [
+            home / ws_clean,
+            home / "src" / ws_clean,
+            home / "src" / "alpeware" / ws_clean,
+            home / "src" / "kaggle" / ws_clean,
+        ]
+        for c in candidates:
+            if c and c.is_dir():
+                return c.resolve()
+
+        # 4. Search under ~/src/ (one level deep)
+        src_dir = home / "src"
+        if src_dir.is_dir():
+            try:
+                for sub in src_dir.iterdir():
+                    if sub.is_dir():
+                        target = sub / ws_clean
+                        if target.is_dir():
+                            return target.resolve()
+            except Exception:
+                pass
+
+        logger.warning("Could not resolve workspace path for '%s'; falling back to %s", ws_name, self.workspace)
+        return self.workspace
+
+    async def run_workspace_agy_turn(self, ws_dir: Path, ws_name: str, message: str) -> None:
+        """Execute a turn directly in a specific workspace using agy -c simulating CLI behavior."""
+        logger.info("Executing agy -c in workspace '%s' (%s)", ws_name, ws_dir)
+
+        self.broadcast_stream_event("settling", f"Connecting to {ws_name} session...")
+
+        agy_bin = shutil.which("agy") or "/home/simonpure/.local/bin/agy"
+        cmd = [
+            agy_bin,
+            "-c",
+            "--dangerously-skip-permissions",
+            "--disable-slash-commands",
+            "--output-format",
+            "stream-json",
+        ]
+
+        env = {**os.environ}
+
+        full_response_chunks: List[str] = []
+        final_response_text = ""
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                env=env,
+                cwd=str(ws_dir),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            async def write_stdin():
+                assert proc.stdin is not None
+                try:
+                    proc.stdin.write(message.encode("utf-8"))
+                    await proc.stdin.drain()
+                finally:
+                    proc.stdin.close()
+                    await proc.stdin.wait_closed()
+
+            async def read_stdout():
+                nonlocal final_response_text
+                assert proc.stdout is not None
+                while True:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        break
+                    raw = line.decode("utf-8", errors="replace").strip()
+                    if not raw:
+                        continue
+                    try:
+                        event_data = json.loads(raw)
+                        event_type = event_data.get("event")
+                        if event_type == "step_update":
+                            su = event_data.get("step_update", {})
+                            delta = su.get("text_delta")
+                            if delta:
+                                full_response_chunks.append(delta)
+                                self.broadcast_stream_event("text", delta)
+                        elif event_type == "result":
+                            res = event_data.get("result", {})
+                            final_response_text = res.get("response", "")
+                    except Exception:
+                        pass
+
+            async def read_stderr():
+                assert proc.stderr is not None
+                while True:
+                    err_line = await proc.stderr.readline()
+                    if not err_line:
+                        break
+
+            await asyncio.wait_for(
+                asyncio.gather(write_stdin(), read_stdout(), read_stderr()),
+                timeout=self.timeout,
+            )
+            await proc.wait()
+
+        except Exception as e:
+            logger.error("Error executing agy turn in workspace '%s': %s", ws_name, e)
+            self.broadcast_stream_event("text", f"\n[Error executing in {ws_name}: {e}]")
+
+        reply = final_response_text.strip() or "".join(full_response_chunks).strip()
+        if reply:
+            self.broadcast_stream_event("log_talk", reply, extra={"workspace": ws_name})
+        self.broadcast_stream_event("turn_complete", "Turn finished.")
+
     async def handle_api_chat(self, request: web.Request) -> web.Response:
-        assert self.agent is not None
         try:
             data = await request.json()
         except Exception:
@@ -641,6 +783,8 @@ class OptChatWebServer:
         message = data.get("message", "").strip()
         if not message:
             return web.json_response({"error": "Message cannot be empty"}, status=400)
+
+        ws_req = (data.get("workspace") or "all").strip().lower()
 
         accept = request.headers.get("Accept", "")
         if "text/event-stream" in accept:
@@ -658,7 +802,12 @@ class OptChatWebServer:
             queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
             self._active_stream_queues.add(queue)
 
-            turn_task = asyncio.create_task(self.agent.submit_user_message(message))
+            if ws_req in ("all", "desk"):
+                assert self.agent is not None
+                turn_task = asyncio.create_task(self.agent.submit_user_message(message))
+            else:
+                ws_dir = self.resolve_workspace_dir(ws_req)
+                turn_task = asyncio.create_task(self.run_workspace_agy_turn(ws_dir, ws_req, message))
 
             try:
                 while not turn_task.done() or not queue.empty():
@@ -677,8 +826,14 @@ class OptChatWebServer:
             return response
 
         # Asynchronous submission: queue task immediately and return status
-        asyncio.create_task(self.agent.submit_user_message(message))
-        return web.json_response({"status": "queued", "message": message})
+        if ws_req in ("all", "desk"):
+            assert self.agent is not None
+            asyncio.create_task(self.agent.submit_user_message(message))
+        else:
+            ws_dir = self.resolve_workspace_dir(ws_req)
+            asyncio.create_task(self.run_workspace_agy_turn(ws_dir, ws_req, message))
+
+        return web.json_response({"status": "queued", "message": message, "workspace": ws_req})
 
     async def handle_api_command(self, request: web.Request) -> web.Response:
         try:
