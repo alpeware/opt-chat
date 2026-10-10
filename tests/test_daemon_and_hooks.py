@@ -521,3 +521,90 @@ async def test_main_turn_auto_capture_on_stop(tmp_path: Path):
         daemon.stop_in_thread()
 
 
+@pytest.mark.asyncio
+async def test_daemon_captures_timer_progress_and_deduplicates(tmp_path: Path):
+    from optchat.daemon import parse_system_message_prompt, extract_latest_turn_from_transcript
+
+    # 1. Test parse_system_message_prompt
+    raw_timer = (
+        "<SYSTEM_MESSAGE>\n"
+        "[Message] timestamp=2026-10-10T14:48:47Z sender=.../task-123 priority=MESSAGE_PRIORITY_HIGH "
+        "content=Check progress on Kaggle GPU kernel runner v38 and local frontier traces v2\n"
+        "</SYSTEM_MESSAGE>"
+    )
+    prompt = parse_system_message_prompt(raw_timer)
+    assert prompt == "Check progress on Kaggle GPU kernel runner v38 and local frontier traces v2"
+
+    raw_bg_task = (
+        "<SYSTEM_MESSAGE>\n"
+        "Task id \"conv/task-3690\" finished with result:\nThe command exited with code 0.\n"
+        "</SYSTEM_MESSAGE>"
+    )
+    task_prompt = parse_system_message_prompt(raw_bg_task)
+    assert task_prompt == "Background task task-3690 finished"
+
+    # 2. Test transcript extraction with SYSTEM_MESSAGE
+    tpath = tmp_path / "transcript.jsonl"
+    with open(tpath, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"step_index": 10, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "content": raw_timer}) + "\n")
+        f.write(json.dumps({"step_index": 11, "source": "MODEL", "type": "PLANNER_RESPONSE", "content": "### Progress Check: Kaggle GPU Runner v38\nfastapi_14978 (Task 4): Executing"}) + "\n")
+
+    turn = extract_latest_turn_from_transcript(str(tpath))
+    assert turn is not None
+    assert turn["step_index"] == 11
+    assert "⏱️ Check progress on Kaggle GPU kernel runner" in turn["user"]
+    assert "Task 4" in turn["reply"]
+
+    # 3. Test daemon capturing successive progress updates with identical header prefixes
+    chat_dir = tmp_path / "chat"
+    sock_path = chat_dir / "engine.sock"
+    ws_dir = tmp_path / "gemma-4-developer-agent"
+    ws_dir.mkdir()
+
+    daemon = OptChatDaemon(chat_dir=chat_dir, socket_path=sock_path, provider_name="mock")
+    daemon.start_in_thread()
+
+    try:
+        client = EngineClient(socket_path=sock_path)
+        assert client.is_daemon_alive(timeout=2.0)
+
+        # First progress check
+        stop_payload = {
+            "conversationId": "gemma-conv",
+            "transcriptPath": str(tpath),
+            "workspacePaths": [str(ws_dir)],
+        }
+        res1 = await client.call_async("hook_event", event="stop", payload=stop_payload)
+        assert res1.get("status") == "ok"
+
+        # Append second progress check (steps 12 and 13) sharing same header prefix
+        with open(tpath, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"step_index": 12, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "content": raw_timer}) + "\n")
+            f.write(json.dumps({
+                "step_index": 13,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "content": "### Progress Check: Kaggle GPU Runner v38\nfastapi_14482 (Task 5): Currently executing (Pydantic v2 TypeAdapter arbitrary types)",
+            }) + "\n")
+
+        res2 = await client.call_async("hook_event", event="stop", payload=stop_payload)
+        assert res2.get("status") == "ok"
+
+        # Both updates should be recorded (2 user + 2 talk = 4 messages)
+        msgs = client.get_history(limit=10)
+        assert len(msgs) == 4
+        assert "Task 4" in msgs[1]["text"]
+        assert "Task 5" in msgs[3]["text"]
+        assert msgs[3]["workspace"] == "gemma-4-developer-agent"
+
+        # Exact duplicate check: firing hook again with no new steps should NOT add messages
+        res3 = await client.call_async("hook_event", event="stop", payload=stop_payload)
+        assert res3.get("status") == "ok"
+        msgs_after = client.get_history(limit=10)
+        assert len(msgs_after) == 4
+
+    finally:
+        daemon.stop_in_thread()
+
+
+

@@ -71,8 +71,34 @@ def extract_subagent_report_from_transcript(transcript_path: str) -> Optional[st
     return report
 
 
+def parse_system_message_prompt(raw: str) -> str:
+    """Extract clean user-readable prompt or task description from a SYSTEM_MESSAGE step."""
+    if not raw:
+        return "System notification"
+    m = re.search(r'content=(.+?)(?:\n</SYSTEM_MESSAGE>|\Z)', raw, re.DOTALL)
+    if m:
+        c = m.group(1).strip()
+        first_line = c.splitlines()[0].strip() if c else ""
+        if "finished with result" in first_line:
+            task_m = re.search(r'Task id "([^"]+)"', first_line)
+            task_short = task_m.group(1).split("/")[-1] if task_m else "task"
+            return f"Background task {task_short} finished"
+        if "\n" not in c and len(c) < 200:
+            return c
+        return first_line[:150]
+    clean = re.sub(r'<[^>]+>', '', raw).strip()
+    if not clean:
+        return "System notification"
+    first_line = clean.splitlines()[0].strip()
+    if "finished with result" in first_line:
+        task_m = re.search(r'Task id "([^"]+)"', first_line)
+        task_short = task_m.group(1).split("/")[-1] if task_m else "task"
+        return f"Background task {task_short} finished"
+    return first_line[:150]
+
+
 def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[str, Any]]:
-    """Extract the most recent completed turn (step_index, user_text, reply_text) from transcript.jsonl."""
+    """Scan transcript.jsonl backwards to find the most recent completed turn (prompt + reply)."""
     from optchat.importer import extract_user_text
     if not transcript_path or not os.path.isfile(transcript_path):
         return None
@@ -97,21 +123,33 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
                 continue
 
             stype = data.get("type")
+            content = data.get("content", "")
+
+            # 1. Look for the most recent PLANNER_RESPONSE with content (the reply)
             if last_reply is None and stype == "PLANNER_RESPONSE":
-                content = data.get("content")
                 if content and content.strip():
                     last_reply = content.strip()
                     last_reply_idx = data.get("step_index", 0)
-            elif last_reply is not None and stype == "USER_INPUT":
-                raw_u = data.get("content", "")
-                if (
-                    "CRITICAL REQUIREMENT: Output ONLY" in raw_u
-                    or "You write the memory of OptChat" in raw_u
-                    or "CRITICAL HOST DIRECTIVE" in raw_u
-                ):
-                    return None
-                last_user = extract_user_text(raw_u)
-                break
+
+            # 2. Once reply is found, walk backwards until we find what triggered this turn
+            elif last_reply is not None:
+                if stype == "USER_INPUT":
+                    if (
+                        "CRITICAL REQUIREMENT: Output ONLY" in content
+                        or "You write the memory of OptChat" in content
+                        or "CRITICAL HOST DIRECTIVE" in content
+                    ):
+                        return None
+                    last_user = extract_user_text(content)
+                    break
+                elif stype == "SYSTEM_MESSAGE":
+                    prompt_text = parse_system_message_prompt(content)
+                    last_user = f"⏱️ {prompt_text}"
+                    break
+                elif stype == "PLANNER_RESPONSE" and content and content.strip():
+                    # Hit previous turn's text reply without finding an explicit input
+                    last_user = "⚙️ Autonomous progress update"
+                    break
     except Exception as e:
         logger.debug("Failed reading transcript %s: %s", transcript_path, e)
         return None
@@ -838,10 +876,11 @@ class OptChatDaemon:
                 msg_content = args.get("Message", "")
                 if msg_content:
                     clean_msg = clean_message_text(msg_content)
+                    formatted_msg = f"[{sub_role}] {clean_msg}"
                     already_logged = False
                     if self.storage and self.storage.messages:
                         for m in self.storage.messages[-5:]:
-                            if m.kind == "work" and (clean_msg[:60] in m.text or m.text[:60] in clean_msg):
+                            if m.kind == "work" and m.text.strip() == formatted_msg.strip():
                                 already_logged = True
                                 break
                     if not already_logged:
@@ -902,10 +941,11 @@ class OptChatDaemon:
                     report = extract_subagent_report_from_transcript(tpath)
                     if report:
                         clean_rep = clean_message_text(report)
+                        formatted_rep = f"[{sub_role}] {clean_rep}"
                         already_logged = False
                         if self.storage and self.storage.messages:
                             for m in self.storage.messages[-5:]:
-                                if m.kind == "work" and (clean_rep[:60] in m.text or m.text[:60] in clean_rep):
+                                if m.kind == "work" and m.text.strip() == formatted_rep.strip():
                                     already_logged = True
                                     break
                         if not already_logged:
@@ -945,11 +985,11 @@ class OptChatDaemon:
                             self._logged_turn_steps[conv_id] = step_idx
                             return {"status": "ok", "ignored": "synthetic_workspace"}
 
-                        # Deduplication check against recent messages in storage
+                        # Deduplication check against recent messages in storage (guard against daemon restart re-logging)
                         already_logged = False
                         if self.storage and self.storage.messages:
                             for m in self.storage.messages[-6:]:
-                                if clean_reply[:60] in m.text or m.text[:60] in clean_reply:
+                                if m.kind == "talk" and clean_reply and clean_reply == m.text.strip():
                                     already_logged = True
                                     break
 
