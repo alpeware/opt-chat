@@ -69,7 +69,17 @@ class OptChatWebServer:
         self.compactor: Optional[Any] = None
         self.agent: Optional[TurnAgent] = None
         self.main_provider: Optional[BaseLLMProvider] = None
-        self.app = web.Application()
+
+        @web.middleware
+        async def static_cache_control(request: web.Request, handler: Any) -> web.StreamResponse:
+            response = await handler(request)
+            if request.path.startswith("/static/"):
+                response.headers["Cache-Control"] = "no-cache, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+            return response
+
+        self.app = web.Application(middlewares=[static_cache_control])
 
         self._active_stream_queues: Set[asyncio.Queue[Dict[str, Any]]] = set()
         self._daemon_event_task: Optional[asyncio.Task] = None
@@ -298,14 +308,22 @@ class OptChatWebServer:
         assert self.storage is not None and self.view is not None
         # Discover known workspaces from offline storage
         known_workspaces = set()
+        if self.workspace:
+            known_workspaces.add(self.workspace.name)
+        elif os.getcwd():
+            known_workspaces.add(Path.cwd().name)
+
+        ignored_labels = {"subagent", "subagents", "agent", "note", "talk", "user", "work", "tool", "echo", "none"}
         if self.storage and self.storage.messages:
-            for m in self.storage.messages[-300:]:
-                if m.workspace:
+            for m in self.storage.messages[-500:]:
+                if m.workspace and m.workspace.lower() not in ignored_labels:
                     known_workspaces.add(m.workspace)
-                else:
+                elif m.text:
                     mat = re.match(r"^\[([a-zA-Z0-9_\-\.]+)\]", m.text)
                     if mat:
-                        known_workspaces.add(mat.group(1))
+                        lbl = mat.group(1)
+                        if lbl.lower() not in ignored_labels and not lbl.startswith("http"):
+                            known_workspaces.add(lbl)
 
         return web.json_response({
             "messages_count": len(self.storage.messages),

@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
   <title>OptChat Web</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=20261010-03">
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v=20261010-03" defer></script>
 </head>
 <body>
   <div id="app">
@@ -43,17 +43,25 @@
     <!-- Filter Nav Bar -->
     <nav id="filter-nav" class="filter-nav">
       <div class="filter-bar">
-        <div class="category-pills" id="category-pills">
-          <button class="filter-btn active" id="filter-cat-all" onclick="setCategoryFilter('all')">All</button>
-          <button class="filter-btn" id="filter-cat-main" onclick="setCategoryFilter('main')">Main Chat</button>
-          <button class="filter-btn" id="filter-cat-subagent" onclick="setCategoryFilter('subagent')">Subagents</button>
-          <button class="filter-btn" id="filter-cat-note" onclick="setCategoryFilter('note')">Notes</button>
+        <div class="filter-group">
+          <span class="filter-group-label">View:</span>
+          <div class="category-pills" id="category-pills">
+            <button type="button" class="filter-btn active" id="filter-cat-all" data-category="all" onclick="setCategoryFilter('all')">All</button>
+            <button type="button" class="filter-btn" id="filter-cat-main" data-category="main" onclick="setCategoryFilter('main')">💬 Main Chat</button>
+            <button type="button" class="filter-btn" id="filter-cat-subagent" data-category="subagent" onclick="setCategoryFilter('subagent')">🤖 Subagents</button>
+            <button type="button" class="filter-btn" id="filter-cat-note" data-category="note" onclick="setCategoryFilter('note')">📝 Notes</button>
+          </div>
         </div>
-        <div class="workspace-pill-select" id="workspace-pill-select">
-          <label for="ws-select-dropdown" class="ws-label">🏷️</label>
-          <select id="ws-select-dropdown" onchange="setWorkspaceFilter(this.value)">
-            <option value="all">All Workspaces</option>
-          </select>
+        <div class="filter-group">
+          <span class="filter-group-label">Workspace:</span>
+          <div class="workspace-pills" id="workspace-pills">
+            <button type="button" class="filter-btn active" data-workspace="all" onclick="setWorkspaceFilter('all')">🏷️ All</button>
+          </div>
+          <div class="workspace-pill-select" id="workspace-pill-select" title="Workspace selector dropdown">
+            <select id="ws-select-dropdown" onchange="setWorkspaceFilter(this.value)">
+              <option value="all">All Workspaces</option>
+            </select>
+          </div>
         </div>
       </div>
     </nav>

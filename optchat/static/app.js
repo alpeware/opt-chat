@@ -440,7 +440,7 @@ function handleStreamEvent(event) {
     const date = (event.extra && event.extra.date) || new Date().toISOString();
     const ws = (event.extra && event.extra.workspace);
     const dev = (event.extra && event.extra.device);
-    const wsMatch = (!selectedWorkspace || selectedWorkspace === 'all' || !ws || ws.toLowerCase() === selectedWorkspace.toLowerCase());
+    const wsMatch = (!selectedWorkspace || selectedWorkspace === 'all' || (ws && ws.toLowerCase() === selectedWorkspace.toLowerCase()));
     let catMatch = true;
     if (selectedCategory && selectedCategory !== 'all') {
       if (selectedCategory === 'main') catMatch = (kind === 'user' || kind === 'talk');
@@ -472,19 +472,66 @@ let availableWorkspaces = [];
 function setCategoryFilter(cat) {
   selectedCategory = cat || 'all';
   document.querySelectorAll('#category-pills .filter-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.getAttribute('data-category') === selectedCategory);
+    const bcat = btn.getAttribute('data-category') || '';
+    btn.classList.toggle('active', bcat === selectedCategory);
   });
   fetchHistory();
 }
 
+function renderWorkspacePills(workspaces) {
+  const container = document.getElementById('workspace-pills');
+  if (!container) return;
+  const wsList = Array.isArray(workspaces) ? workspaces : [];
+
+  let html = `<button type="button" class="filter-btn ${selectedWorkspace === 'all' ? 'active' : ''}" data-workspace="all" onclick="setWorkspaceFilter('all')">🏷️ All</button>`;
+  for (const w of wsList) {
+    if (!w) continue;
+    const isAct = (selectedWorkspace.toLowerCase() === w.toLowerCase());
+    html += `<button type="button" class="filter-btn ${isAct ? 'active' : ''}" data-workspace="${escapeHtml(w)}" onclick="setWorkspaceFilter('${escapeHtml(w)}')">📁 ${escapeHtml(w)}</button>`;
+  }
+  container.innerHTML = html;
+
+  const sel = document.getElementById('ws-select-dropdown');
+  if (sel) {
+    let opts = '<option value="all">All Workspaces</option>';
+    for (const w of wsList) {
+      if (!w) continue;
+      opts += `<option value="${escapeHtml(w)}">${escapeHtml(w)}</option>`;
+    }
+    sel.innerHTML = opts;
+    sel.value = selectedWorkspace;
+  }
+}
+
 function setWorkspaceFilter(ws) {
   selectedWorkspace = (ws || 'all').toLowerCase();
+
+  // Update workspace pills highlight
+  document.querySelectorAll('#workspace-pills .filter-btn').forEach(btn => {
+    const bws = (btn.getAttribute('data-workspace') || '').toLowerCase();
+    btn.classList.toggle('active', bws === selectedWorkspace);
+  });
+
+  // Sync select dropdown
   const sel = document.getElementById('ws-select-dropdown');
-  if (sel) sel.value = selectedWorkspace;
+  if (sel) {
+    let found = false;
+    for (let i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value.toLowerCase() === selectedWorkspace) {
+        sel.selectedIndex = i;
+        found = true;
+        break;
+      }
+    }
+    if (!found && selectedWorkspace === 'all') sel.value = 'all';
+  }
+
+  // Update header workspace pill
   const wsEl = document.getElementById('pill-ws');
   if (wsEl) {
     wsEl.textContent = selectedWorkspace === 'all' ? '📁 All' : '📁 ' + selectedWorkspace;
   }
+
   fetchHistory();
 }
 
@@ -493,23 +540,26 @@ async function fetchState() {
     const res = await fetch('/api/state');
     if (!res.ok) return;
     const data = await res.json();
-    document.getElementById('pill-msgs').textContent = `Msgs: ${data.messages_count.toLocaleString()}`;
-    document.getElementById('pill-nodes').textContent = `Nodes: ${data.tree_nodes_count.toLocaleString()}`;
-    const pct = ((data.view_size / data.view_budget) * 100).toFixed(0);
-    document.getElementById('pill-view').textContent = `View: ${pct}%`;
-    document.getElementById('status-dot').style.background = data.is_settled ? '#10b981' : '#f59e0b';
+    const pillMsgs = document.getElementById('pill-msgs');
+    if (pillMsgs && data.messages_count !== undefined) {
+      pillMsgs.textContent = `Msgs: ${data.messages_count.toLocaleString()}`;
+    }
+    const pillNodes = document.getElementById('pill-nodes');
+    if (pillNodes && data.tree_nodes_count !== undefined) {
+      pillNodes.textContent = `Nodes: ${data.tree_nodes_count.toLocaleString()}`;
+    }
+    if (data.view_budget) {
+      const pct = (((data.view_size || 0) / data.view_budget) * 100).toFixed(0);
+      const pillView = document.getElementById('pill-view');
+      if (pillView) pillView.textContent = `View: ${pct}%`;
+    }
+    const statusDot = document.getElementById('status-dot');
+    if (statusDot) {
+      statusDot.style.background = data.is_settled ? '#10b981' : '#f59e0b';
+    }
     if (data.workspaces && Array.isArray(data.workspaces)) {
       availableWorkspaces = data.workspaces;
-      const sel = document.getElementById('ws-select-dropdown');
-      if (sel) {
-        const cur = sel.value || selectedWorkspace;
-        let opts = '<option value="all">All Workspaces</option>';
-        for (const w of availableWorkspaces) {
-          opts += `<option value="${escapeHtml(w)}">${escapeHtml(w)}</option>`;
-        }
-        sel.innerHTML = opts;
-        sel.value = cur;
-      }
+      renderWorkspacePills(availableWorkspaces);
     }
     if (data.workspace) {
       currentWorkspace = data.workspace;
@@ -522,7 +572,8 @@ async function fetchState() {
       }
     }
   } catch (e) {
-    document.getElementById('status-dot').style.background = '#ef4444';
+    const statusDot = document.getElementById('status-dot');
+    if (statusDot) statusDot.style.background = '#ef4444';
   }
 }
 

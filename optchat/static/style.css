@@ -147,49 +147,87 @@ header {
 }
 
 /* Filter Navigation Bar */
+/* Filter Navigation Bar */
 .filter-nav {
   display: flex;
   background: var(--card-bg);
   border-bottom: 1px solid var(--card-border);
   padding: 6px 14px;
   flex-shrink: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.filter-nav::-webkit-scrollbar {
+  display: none;
 }
 
 .filter-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 16px;
   width: 100%;
-  gap: 8px;
-  overflow-x: auto;
+  min-width: max-content;
 }
 
-.category-pills {
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-group-label {
+  font-size: 0.70rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  margin-right: 2px;
+  user-select: none;
+}
+
+.category-pills,
+.workspace-pills {
   display: flex;
   gap: 6px;
   align-items: center;
 }
 
 .filter-btn {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  outline: none;
+  font-family: inherit;
   background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   color: var(--text-dim);
-  padding: 3px 10px;
-  border-radius: 12px;
+  padding: 4px 10px;
+  border-radius: 14px;
   font-size: 0.78rem;
+  font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
-  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+  user-select: none;
+  box-sizing: border-box;
 }
+
 .filter-btn:hover {
   background: rgba(255, 255, 255, 0.12);
   color: var(--text);
+  border-color: rgba(255, 255, 255, 0.22);
 }
+
 .filter-btn.active {
-  background: var(--accent);
+  background: rgba(56, 189, 248, 0.2);
   border-color: var(--accent);
   color: #fff;
   font-weight: 600;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.2);
 }
 
 .workspace-pill-select {
@@ -198,20 +236,27 @@ header {
   gap: 4px;
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  padding: 2px 8px;
+  padding: 3px 8px;
   border-radius: 12px;
 }
+
 .workspace-pill-select select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
   background: transparent;
   border: none;
   color: var(--text);
-  font-size: 0.78rem;
+  font-size: 0.76rem;
+  font-family: inherit;
   outline: none;
   cursor: pointer;
+  padding: 0 2px;
 }
+
 .workspace-pill-select select option {
-  background: var(--card-bg);
-  color: var(--text);
+  background: #131b2e;
+  color: #f1f5f9;
 }
 
 /* Message Header & Timestamps */
