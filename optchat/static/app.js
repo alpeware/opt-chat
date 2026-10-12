@@ -472,8 +472,12 @@ async function fetchHistory() {
     }
     const msgs = await res.json();
     const stream = document.getElementById('chat-stream');
-    if (Array.isArray(msgs) && msgs.length > 0) {
+    if (Array.isArray(msgs)) {
       stream.innerHTML = '';
+      if (msgs.length === 0) {
+        stream.innerHTML = `<div class="empty-stream-notice" style="text-align: center; padding: 40px 20px; color: var(--text-dim); font-size: 0.9rem;">No messages in workspace <b>${escapeHtml(selectedWorkspace)}</b>.</div>`;
+        return;
+      }
 
       // Check if earlier messages exist in tree
       try {

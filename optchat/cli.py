@@ -377,8 +377,9 @@ def main() -> None:
                 view = LiveView(storage)
                 view.rebuild()
                 if ws_name and ws_name.lower() != "all":
-                    tag = f"[{ws_name.lower()}]"
-                    lines = [p.render(storage) for p in view.parts if tag in p.render(storage).lower()]
+                    ws_target = ws_name.lower()
+                    ws_pat = re.compile(r"\|\w+:\s*\[" + re.escape(ws_target) + r"\]", re.IGNORECASE)
+                    lines = [p.render(storage) for p in view.parts if ws_pat.search(p.render(storage))]
                     view_text = "<chat>\n" + "\n".join(lines) + "\n</chat>" if lines else f"<chat>\n(no entries for workspace [{ws_name}])\n</chat>"
                 else:
                     view_text = view.render()
@@ -502,10 +503,11 @@ def main() -> None:
             try:
                 storage_msgs = storage.messages
                 if ws_name and ws_name.lower() != "all":
-                    tag = f"[{ws_name.lower()}]"
+                    ws_target = ws_name.lower()
                     storage_msgs = [
                         m for m in storage_msgs
-                        if (m.workspace and m.workspace.lower() == ws_name.lower()) or tag in m.text.lower()
+                        if (m.workspace and m.workspace.lower() == ws_target)
+                        or (not m.workspace and m.text.strip().lower().startswith(f"[{ws_target}]"))
                     ]
                 msgs = [
                     {

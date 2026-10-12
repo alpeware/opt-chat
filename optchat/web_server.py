@@ -584,7 +584,7 @@ class OptChatWebServer:
             storage_msgs = [
                 m for m in storage_msgs
                 if (m.workspace and m.workspace.lower() == ws_target)
-                or (f"[{ws_target}]" in m.text.lower())
+                or (not m.workspace and m.text.strip().lower().startswith(f"[{ws_target}]"))
             ]
         if category_filter and category_filter.lower() != "all":
             cat = category_filter.lower()
@@ -627,8 +627,9 @@ class OptChatWebServer:
         assert self.storage is not None and self.view is not None
         lines = [part.render(self.storage) for part in self.view.parts]
         if ws_filter and ws_filter.lower() != "all":
-            tag = f"[{ws_filter.lower()}]"
-            lines = [l for l in lines if tag in l.lower()]
+            ws_target = ws_filter.lower()
+            ws_pat = re.compile(r"\|\w+:\s*\[" + re.escape(ws_target) + r"\]", re.IGNORECASE)
+            lines = [l for l in lines if ws_pat.search(l)]
         return web.json_response({
             "size": self.view.compute_size(),
             "budget": self.view.budget,
