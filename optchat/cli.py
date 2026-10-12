@@ -503,7 +503,10 @@ def main() -> None:
                 storage_msgs = storage.messages
                 if ws_name and ws_name.lower() != "all":
                     tag = f"[{ws_name.lower()}]"
-                    storage_msgs = [m for m in storage_msgs if tag in m.text.lower()]
+                    storage_msgs = [
+                        m for m in storage_msgs
+                        if (m.workspace and m.workspace.lower() == ws_name.lower()) or tag in m.text.lower()
+                    ]
                 msgs = [
                     {
                         "i": m.i,

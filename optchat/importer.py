@@ -13,11 +13,16 @@ from optchat.view import LiveView
 
 
 def extract_user_text(raw_content: str) -> str:
-    """Extract clean user prompt from agy user request markup."""
+    """Extract clean user prompt from agy user request markup or raw turn prompts."""
     m = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", raw_content, re.DOTALL)
     if m:
         return m.group(1).strip()
-    return raw_content.strip()
+    text = raw_content.strip()
+    if "=== USER REQUEST ===" in text:
+        text = text.split("=== USER REQUEST ===", 1)[1].strip()
+    elif "</chat>" in text:
+        text = text.split("</chat>", 1)[1].strip()
+    return text.strip()
 
 
 def import_agy_transcript(
