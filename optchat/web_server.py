@@ -31,7 +31,7 @@ from optchat.engine_client import EngineClient, ProxyCompactor, ProxyStorage, Pr
 from optchat.providers import create_provider
 from optchat.providers.agy_provider import AgyProvider
 from optchat.providers.base import BaseLLMProvider
-from optchat.storage import Storage
+from optchat.storage import Message, Storage, is_valid_workspace_name
 from optchat.tools import ToolRegistry
 from optchat.tree import node_coords
 from optchat.view import LiveView
@@ -534,21 +534,22 @@ class OptChatWebServer:
         assert self.storage is not None and self.view is not None
         # Discover known workspaces from offline storage
         known_workspaces = set()
-        if self.workspace:
+        if self.workspace and is_valid_workspace_name(self.workspace.name):
             known_workspaces.add(self.workspace.name)
         elif os.getcwd():
-            known_workspaces.add(Path.cwd().name)
+            cwd_name = Path.cwd().name
+            if is_valid_workspace_name(cwd_name):
+                known_workspaces.add(cwd_name)
 
-        ignored_labels = {"subagent", "subagents", "agent", "note", "talk", "user", "work", "tool", "echo", "none", "all"}
         if self.storage and self.storage.messages:
             for m in self.storage.messages:
-                if m.workspace and m.workspace.lower() not in ignored_labels:
+                if m.workspace and is_valid_workspace_name(m.workspace):
                     known_workspaces.add(m.workspace)
-                elif m.text:
-                    mat = re.search(r"\[([a-zA-Z0-9_\-\.]+)\]", m.text)
+                elif m.text and m.text.startswith("["):
+                    mat = re.match(r"^\[([a-zA-Z0-9_\-]+)\](?:\s|$)", m.text)
                     if mat:
                         lbl = mat.group(1)
-                        if lbl.lower() not in ignored_labels and not lbl.startswith("http") and len(lbl) < 40:
+                        if is_valid_workspace_name(lbl):
                             known_workspaces.add(lbl)
 
         return web.json_response({

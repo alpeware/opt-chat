@@ -66,6 +66,39 @@ def get_device_name_info(cfg_path: Optional[Path] = None) -> Tuple[str, str]:
         return "node", "fallback"
 
 
+def is_valid_workspace_name(name: Any) -> bool:
+    """Validate that a workspace label is a valid directory name, not a file or generic word."""
+    if not name or not isinstance(name, str):
+        return False
+    clean = name.strip()
+    if not clean or len(clean) > 60:
+        return False
+    # Never allow file extensions
+    if any(clean.lower().endswith(ext) for ext in (
+        ".md", ".clj", ".py", ".json", ".edn", ".txt", ".js", ".css", ".html",
+        ".sh", ".yaml", ".yml", ".lock", ".toml", ".png", ".jpg", ".svg", ".log"
+    )):
+        return False
+    # Never allow options, flags, URLs, or path separators
+    if clean.startswith("-") or clean.startswith("/") or clean.startswith("http") or "/" in clean or "\\" in clean:
+        return False
+    # Must only contain valid directory characters
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_\-\.]*$", clean):
+        return False
+    # Filter out common markdown/code words, internal labels, or screaming-case placeholders
+    if clean.isupper():
+        return False
+    ignored = {
+        "subagent", "subagents", "agent", "note", "talk", "user", "work", "tool", "echo",
+        "none", "all", "true", "false", "message", "dropdown", "walkthrough", "delta",
+        "premiums", "res", "dev", "task", "date", "archived", "session", "root", "unknown",
+        "null", "nil", "undefined"
+    }
+    if clean.lower() in ignored:
+        return False
+    return True
+
+
 class Message:
     __slots__ = ("i", "kind", "text", "size", "date", "key", "workspace", "device")
 

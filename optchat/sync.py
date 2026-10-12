@@ -39,19 +39,34 @@ def reconcile_messages(
     for m in local_msgs:
         by_key[m.key] = m
 
+    has_changes = False
     for m in remote_msgs:
         if m.key not in by_key:
             by_key[m.key] = m
+            has_changes = True
         else:
-            # If same key, prefer local or whichever has more complete content
-            pass
+            existing = by_key[m.key]
+            # If incoming message has a workspace but existing does not, upgrade it
+            if not existing.workspace and m.workspace:
+                by_key[m.key] = Message(
+                    i=existing.i,
+                    kind=existing.kind,
+                    text=existing.text,
+                    size=m.size,
+                    date=existing.date,
+                    key=existing.key,
+                    workspace=m.workspace,
+                    device=existing.device or m.device,
+                )
+                has_changes = True
 
     # Sort strictly lexicographically by key (timestamp#device)
     sorted_msgs = sorted(by_key.values(), key=lambda m: m.key)
 
     # Re-index continuously 0, 1, 2, ...
     unified: List[Message] = []
-    has_changes = len(sorted_msgs) != len(local_msgs)
+    if len(sorted_msgs) != len(local_msgs):
+        has_changes = True
 
     for idx, m in enumerate(sorted_msgs):
         if m.i != idx:
@@ -64,12 +79,17 @@ def reconcile_messages(
                 size=m.size,
                 date=m.date,
                 key=m.key,
+                workspace=m.workspace,
+                device=m.device,
             )
         )
 
     if not has_changes:
         for idx in range(len(local_msgs)):
-            if local_msgs[idx].key != unified[idx].key:
+            if (
+                local_msgs[idx].key != unified[idx].key
+                or local_msgs[idx].workspace != unified[idx].workspace
+            ):
                 has_changes = True
                 break
 
@@ -149,7 +169,7 @@ def apply_sync_payload(storage: Storage, payload: Dict[str, Any]) -> Dict[str, A
 
         if is_strict_append:
             new_items = unified_msgs[len(storage.messages):]
-            batch = [(m.kind, m.text, m.date, m.key) for m in new_items]
+            batch = [(m.kind, m.text, m.date, m.key, m.workspace, m.device) for m in new_items]
             storage.append_messages_batch(batch)
             imported_msgs_count = len(new_items)
         else:
@@ -189,7 +209,7 @@ def _rewrite_storage_messages(
             pass
 
     # Re-append all unified messages
-    batch = [(m.kind, m.text, m.date, m.key) for m in unified_msgs]
+    batch = [(m.kind, m.text, m.date, m.key, m.workspace, m.device) for m in unified_msgs]
     storage.append_messages_batch(batch)
 
     # Invalidate tree nodes that spanned beyond first_diff_idx

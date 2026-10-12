@@ -134,3 +134,25 @@ def test_device_name_resolution(tmp_path: Path, monkeypatch):
     name, source = get_device_name_info(cfg_path=cfg_file)
     assert name == "config-node"
     assert "config file" in source
+
+
+def test_is_valid_workspace_name():
+    from optchat.storage import is_valid_workspace_name
+
+    assert is_valid_workspace_name("desk") is True
+    assert is_valid_workspace_name("opt-chat") is True
+    assert is_valid_workspace_name("jacquard") is True
+    assert is_valid_workspace_name("gsuite-cli") is True
+    assert is_valid_workspace_name("gemma-4-developer-agent") is True
+
+    # Invalid names (files, extensions, options, generic words)
+    assert is_valid_workspace_name("DESIGN.md") is False
+    assert is_valid_workspace_name("deps.edn") is False
+    assert is_valid_workspace_name("alpaca.clj") is False
+    assert is_valid_workspace_name("--json") is False
+    assert is_valid_workspace_name("LIST_ID") is False
+    assert is_valid_workspace_name("dropdown") is False
+    assert is_valid_workspace_name("none") is False
+    assert is_valid_workspace_name("null") is False
+    assert is_valid_workspace_name("") is False
+    assert is_valid_workspace_name(None) is False

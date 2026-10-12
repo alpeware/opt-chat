@@ -287,3 +287,28 @@ def test_two_phase_gather_scatter_convergence(tmp_path: Path):
     laptop_store.close()
     phone_store.close()
 
+
+def test_sync_preserves_workspace_and_device(tmp_path: Path):
+    from optchat.sync import export_sync_payload, apply_sync_payload
+
+    store_a = Storage(tmp_path / "a")
+    store_b = Storage(tmp_path / "b")
+    store_a.open()
+    store_b.open()
+
+    msg = store_a.append_message("user", "Hello with workspace", workspace="gsuite-cli", device="desk-box")
+    assert msg.workspace == "gsuite-cli"
+    assert msg.device == "desk-box"
+
+    payload = export_sync_payload(store_a)
+    apply_sync_payload(store_b, payload)
+
+    assert len(store_b.messages) == 1
+    imported = store_b.messages[0]
+    assert imported.workspace == "gsuite-cli"
+    assert imported.device == "desk-box"
+
+    store_a.close()
+    store_b.close()
+
+
