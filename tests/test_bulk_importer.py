@@ -330,3 +330,82 @@ def test_daemon_ipc_import_actions(tmp_path: Path):
         daemon.stop_in_thread()
 
 
+def test_bulk_importer_filters_noise(tmp_path: Path):
+    gemini_dir = tmp_path / "mock_gemini"
+    cli_dir = gemini_dir / "antigravity-cli"
+    cli_dir.mkdir(parents=True)
+
+    # 1. DB with 1 clean session and 1 noisy automated session starting with '{'
+    db_path = cli_dir / "conversation_summaries.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE conversation_summaries (
+            conversation_id TEXT PRIMARY KEY,
+            title TEXT,
+            preview TEXT,
+            step_count INTEGER,
+            last_modified_time TEXT,
+            last_user_input_time TEXT,
+            workspace_uris TEXT
+        )
+    """)
+    cur.execute(
+        "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("conv-clean", "Clean Task", "Real task preview", 4, "2026-10-01 10:00:00", "2026-10-01 10:00:00", '["file:///home/user/src/test-ws"]'),
+    )
+    cur.execute(
+        "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("conv-auto", "", "{\n  \"dailyBar\": 750.4\n}", 4, "2026-10-01 10:00:00", "2026-10-01 10:00:00", '["file:///home/user/src/test-ws"]'),
+    )
+    conn.commit()
+    conn.close()
+
+    # 2. Mock transcript with both real user/talk and intermediate planner chatter
+    tpath = cli_dir / "brain" / "conv-clean" / ".system_generated" / "logs" / "transcript.jsonl"
+    tpath.parent.mkdir(parents=True)
+    with open(tpath, "w") as f:
+        f.write(json.dumps({
+            "type": "USER_INPUT",
+            "content": "<USER_REQUEST>\nLet's implement the design.\n</USER_REQUEST>",
+            "created_at": "2026-10-01T10:00:00Z",
+        }) + "\n")
+        # Intermediate tool-intent planner utterance (should be filtered out)
+        f.write(json.dumps({
+            "type": "PLANNER_RESPONSE",
+            "content": "I will view the src/core.clj file to inspect the engine.",
+            "created_at": "2026-10-01T10:00:02Z",
+        }) + "\n")
+        # Substantive final reply (should be kept)
+        f.write(json.dumps({
+            "type": "PLANNER_RESPONSE",
+            "content": "I have completed the design implementation according to the plan.",
+            "created_at": "2026-10-01T10:00:05Z",
+        }) + "\n")
+
+    chat_dir = tmp_path / "target_optchat"
+    storage = Storage(chat_dir)
+    storage.open()
+
+    importer = BulkImporter(
+        storage=storage,
+        workspace_filter="test-ws",
+        base_gemini_dir=gemini_dir,
+    )
+
+    convs, unattached = importer.discover()
+    # conv-auto should be excluded!
+    assert len(convs) == 1
+    assert convs[0]["cid"] == "conv-clean"
+
+    c_count, m_count = importer.import_all()
+    assert c_count == 1
+    # Only 2 messages should be imported: the user prompt and the substantive talk!
+    assert m_count == 2
+    assert storage.messages[0].text == "Let's implement the design."
+    assert storage.messages[1].text == "I have completed the design implementation according to the plan."
+
+    storage.close()
+
+
+

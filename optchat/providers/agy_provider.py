@@ -290,20 +290,16 @@ class AgyProvider(BaseLLMProvider):
     ) -> str:
         """Execute compactor step using agy."""
         parts = [
-            "CRITICAL REQUIREMENT: Output ONLY the single summary line directly. "
-            "Do NOT call any tools. Do NOT run commands or scripts. "
-            "Do NOT read or write files. Do NOT write intro or outro. "
-            "Output only plain text.\n",
-            f"System:\n{system}\n",
+            f"=== SYSTEM INSTRUCTIONS ===\n{system}\n",
         ]
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if isinstance(content, list):
                 block_texts = [b.get("text", "") if isinstance(b, dict) else str(b) for b in content]
-                parts.append(f"{role}:\n" + "\n".join(block_texts))
+                parts.append(f"=== {role.upper()} ===\n" + "\n".join(block_texts))
             else:
-                parts.append(f"{role}:\n{content}")
+                parts.append(f"=== {role.upper()} ===\n{content}")
 
         full_prompt = "\n\n".join(parts)
 

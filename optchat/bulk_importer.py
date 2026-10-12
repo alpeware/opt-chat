@@ -145,6 +145,14 @@ class BulkImporter:
                     if "CRITICAL REQUIREMENT: Output ONLY" in p_str or "You write the memory of OptChat" in p_str:
                         continue
 
+                    # Filter out automated evaluation loops and JSON blobs
+                    p_clean = (preview or "").strip()
+                    t_clean = (title or "").strip()
+                    if p_clean.startswith(("{", "[")) or t_clean.startswith(("{", "[")):
+                        continue
+                    if not t_clean and (not p_clean or len(p_clean) < 15):
+                        continue
+
                     is_match = self._matches_workspace(ws_uris)
                     db_summaries[cid] = {
                         "cid": cid,
@@ -177,8 +185,10 @@ class BulkImporter:
                             d = json.loads(stripped)
                         except Exception:
                             continue
-                        disp = d.get("display", "")
+                        disp = d.get("display", "").strip()
                         if "CRITICAL REQUIREMENT: Output ONLY" in disp or "You write the memory of OptChat" in disp:
+                            continue
+                        if disp.startswith("/") or disp.startswith("⏱️") or "check progress" in disp.lower():
                             continue
                         ws = d.get("workspace", "")
                         if self._matches_workspace(ws):
@@ -299,6 +309,9 @@ class BulkImporter:
                         continue
                     clean_user = extract_user_text(raw_c)
                     if clean_user:
+                        c_strip = clean_user.strip()
+                        if c_strip.startswith("/") or c_strip.startswith("⏱️") or "check progress" in c_strip.lower():
+                            continue
                         messages.append(("user", clean_user, ts))
 
                 elif stype == "PLANNER_RESPONSE":
@@ -312,7 +325,10 @@ class BulkImporter:
 
                     reply_text = data.get("content")
                     if reply_text and reply_text.strip():
-                        messages.append(("talk", reply_text.strip(), ts))
+                        t = reply_text.strip()
+                        # Filter out intermediate planner scratchpad / tool-intent announcements
+                        if not re.match(r'^(I will|I\'ll|Let me|I am going to|I need to|I\'m going to|I would like to|I am waiting|I\'ll wait|I will wait)\s', t, re.IGNORECASE) and not t.startswith("⏱️") and not t.startswith("### Progress Check") and "manage_task" not in t:
+                            messages.append(("talk", t, ts))
 
                 elif stype == "GENERIC" and not self.skip_tools:
                     content = data.get("content", "")
@@ -377,14 +393,18 @@ class BulkImporter:
                 preview = summary.get("preview") or ""
                 mtime = summary.get("mtime")
                 if title or preview:
-                    note_text = f"[Archived Session {cid[:8]}] {title}: {preview}".strip()
-                    all_messages_to_append.append(("note", note_text, mtime, None, ws_name, None))
-                    cids_imported[cid] = {
-                        "count": 1,
-                        "first_ts": mtime,
-                        "last_ts": mtime,
-                        "has_transcript": False,
-                    }
+                    t_str = (title or "").strip()
+                    p_str = (preview or "").strip()
+                    if not t_str.startswith(("{", "[")) and not p_str.startswith(("{", "[")):
+                        if not any(tool_word in t_str for tool_word in ['List Directory', 'Run Formatter', 'Format ']):
+                            note_text = f"[Archived Session {cid[:8]}] {title}: {preview}".strip()
+                            all_messages_to_append.append(("note", note_text, mtime, None, ws_name, None))
+                            cids_imported[cid] = {
+                                "count": 1,
+                                "first_ts": mtime,
+                                "last_ts": mtime,
+                                "has_transcript": False,
+                            }
 
         # Add unattached history entries
         for h in unattached_history:

@@ -146,3 +146,93 @@ def test_cache_pieces_split(tmp_path: Path):
         assert p.endswith("\n")
 
     storage.close()
+
+
+def test_sawtooth_batch_merge(tmp_path: Path):
+    storage = Storage(tmp_path / "chat")
+    storage.open()
+
+    # budget=200, min_budget=100
+    view = LiveView(storage, budget=200, min_budget=100)
+
+    # Pre-build nodes so parents are ready to merge
+    for i in range(16):
+        storage.append_message("user", f"m{i}")
+        storage.save_node(0, i, f"s{i} 20bytes text padding!")
+    for i in range(8):
+        storage.save_node(1, i, f"merged {2*i}-{2*i+1} pad")
+    for i in range(4):
+        storage.save_node(2, i, f"l2 merge {i} pad text")
+
+    # Add messages one by one and check sawtooth behavior
+    # Each message adds ~25 bytes.
+    # From 0 to ~7 messages (~175 bytes), size < 200, no merges happen!
+    for i in range(6):
+        view.on_new_message(i)
+
+    # Verify no merges happened yet (all level 0 parts)
+    assert all(p.l == 0 for p in view.parts)
+    assert len(view.parts) == 6
+
+    # Message 7 reaches size 192 (just below 200).
+    # Adding message 8 pushes size > 200, which triggers the batch merge down to <= 100 (min_budget).
+    view.on_new_message(6)
+    view.on_new_message(7)
+    view.on_new_message(8)
+    assert view.compute_size() <= 100
+    assert any(p.l > 0 for p in view.parts)
+
+    # Now verify that subsequent messages append to the end without folding while size < 200
+    pre_parts = len(view.parts)
+    view.on_new_message(9)
+    view.on_new_message(10)
+    assert len(view.parts) == pre_parts + 2
+    assert view.parts[-1].l == 0
+    assert view.compute_size() > 100
+    assert view.compute_size() < 200
+
+    storage.close()
+
+
+def test_view_persistence_view_json(tmp_path: Path):
+    storage = Storage(tmp_path / "chat")
+    storage.open()
+
+    vpath = tmp_path / "chat" / "view.json"
+    view1 = LiveView(storage, budget=200, min_budget=100, view_path=vpath)
+
+    for i in range(8):
+        storage.append_message("user", f"msg {i}")
+        storage.save_node(0, i, f"s{i}")
+        view1.on_new_message(i)
+
+    assert vpath.is_file()
+
+    # Create view2 pointing to same path; load_view should succeed
+    view2 = LiveView(storage, budget=200, min_budget=100, view_path=vpath)
+    loaded = view2.load_view()
+    assert loaded is True
+    assert len(view1.parts) == len(view2.parts)
+    for p1, p2 in zip(view1.parts, view2.parts):
+        assert p1 == p2
+
+    storage.close()
+
+
+def test_compaction_view_sawtooth(tmp_path: Path):
+    from optchat.view import CompactionView
+    storage = Storage(tmp_path / "chat")
+    storage.open()
+
+    cview = CompactionView(storage, budget=100, min_budget=50)
+    for i in range(8):
+        storage.append_message("user", f"message {i}")
+        storage.save_node(0, i, f"summary {i}")
+        cview.on_new_message(i)
+
+    ctx = cview.render_for_node(end_message_idx=4)
+    assert "<chat>" in ctx
+    assert "0+1|" not in ctx  # Bare text only
+
+    storage.close()
+
