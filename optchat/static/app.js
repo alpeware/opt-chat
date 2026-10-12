@@ -73,6 +73,25 @@ function connectEventStream() {
   };
 }
 
+function normalizeMessageText(t) {
+  if (!t) return '';
+  return t.replace(/\r\n/g, '\n').replace(/\s+/g, ' ').trim();
+}
+
+function isMatchingMessageText(a, b) {
+  const normA = normalizeMessageText(a);
+  const normB = normalizeMessageText(b);
+  if (!normA || !normB) return false;
+  if (normA === normB) return true;
+  if (normA.includes(normB) || normB.includes(normA)) return true;
+  const minLen = Math.min(normA.length, normB.length);
+  if (minLen >= 20) {
+    const prefixLen = Math.min(minLen, 80);
+    if (normA.slice(0, prefixLen) === normB.slice(0, prefixLen)) return true;
+  }
+  return false;
+}
+
 function handleStreamEvent(event) {
   if (event.type === 'token' || event.type === 'text') {
     if (!currentAssistantBubble) {
@@ -81,8 +100,30 @@ function handleStreamEvent(event) {
     }
     currentStreamedText += event.content;
     currentAssistantBubble.innerHTML = formatMarkdown(currentStreamedText) + '<span class="cursor-stream"></span>';
+    const row = currentAssistantBubble.closest('.message-row');
+    if (row) {
+      row.setAttribute('data-raw-text', currentStreamedText.trim());
+    }
     scrollToBottom();
   } else if (event.type === 'log_talk') {
+    const talkText = (event.content || '').trim();
+    // Check if an existing row in chat-stream already matches this text
+    const stream = document.getElementById('chat-stream');
+    if (stream) {
+      const rows = stream.querySelectorAll('.message-row.talk');
+      for (let idx = rows.length - 1; idx >= Math.max(0, rows.length - 8); idx--) {
+        const r = rows[idx];
+        const rText = r.getAttribute('data-raw-text');
+        if (isMatchingMessageText(rText, talkText)) {
+          r.setAttribute('data-raw-text', talkText);
+          currentAssistantBubble = null;
+          currentStreamedText = '';
+          scrollToBottom();
+          fetchState();
+          return;
+        }
+      }
+    }
     if (!currentAssistantBubble) {
       currentAssistantBubble = pendingAssistantBubbles.shift() || appendMessage('talk', '', new Date().toISOString(), false);
     }
@@ -195,21 +236,43 @@ function handleStreamEvent(event) {
       const rows = stream.querySelectorAll('.message-row');
       // 1. If this exact message ID is already rendered, ignore completely
       if (msgId !== undefined && msgId !== null) {
-        for (let idx = rows.length - 1; idx >= Math.max(0, rows.length - 15); idx--) {
+        for (let idx = rows.length - 1; idx >= Math.max(0, rows.length - 20); idx--) {
           if (rows[idx].getAttribute('data-msg-id') === String(msgId)) {
             fetchState();
             return;
           }
         }
       }
-      // 2. Check for an unconfirmed local row with matching text
-      for (let idx = rows.length - 1; idx >= Math.max(0, rows.length - 8); idx--) {
+
+      // 2. Check if active assistant bubble is currently streaming or pending this reply
+      if (kind === 'talk' && (currentAssistantBubble || pendingAssistantBubbles.length > 0)) {
+        const targetBubble = currentAssistantBubble || pendingAssistantBubbles.shift();
+        if (targetBubble) {
+          targetBubble.innerHTML = renderBubbleContent('talk', text);
+          const r = targetBubble.closest('.message-row');
+          if (r) {
+            r.setAttribute('data-raw-text', text);
+            if (msgId !== undefined && msgId !== null) r.setAttribute('data-msg-id', String(msgId));
+            enrichMessageRow(r, kind, ws, dev, date);
+          }
+          currentAssistantBubble = null;
+          currentStreamedText = '';
+          scrollToBottom();
+          fetchState();
+          return;
+        }
+      }
+
+      // 3. Check for any recent row of matching kind with matching text (reconcile optimistic/streamed)
+      for (let idx = rows.length - 1; idx >= Math.max(0, rows.length - 12); idx--) {
         const r = rows[idx];
-        const rText = r.getAttribute('data-raw-text');
-        const rId = r.getAttribute('data-msg-id');
-        if (!rId && rText && (rText === text || (text && rText.includes(text.slice(0, 100))))) {
-          matchedRow = r;
-          break;
+        const rKind = r.classList.contains(kind) || (!r.classList.contains('user') && kind === 'talk');
+        if (rKind) {
+          const rText = r.getAttribute('data-raw-text');
+          if (isMatchingMessageText(rText, text)) {
+            matchedRow = r;
+            break;
+          }
         }
       }
     }

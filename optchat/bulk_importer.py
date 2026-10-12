@@ -26,7 +26,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from optchat.compactor import Compactor
 from optchat.constants import JOBS
 from optchat.importer import extract_user_text
-from optchat.storage import Message, Storage
+from optchat.storage import Message, Storage, is_valid_workspace_name
 from optchat.view import LiveView
 from optchat.visualizer import export_html_to_file
 from optchat.providers import create_provider
@@ -63,6 +63,8 @@ def clean_workspace_name(ws_raw: Any) -> Optional[str]:
     if val.startswith("file://"):
         val = val[7:]
     name = Path(val).name.strip("[]\"' ")
+    if not is_valid_workspace_name(name):
+        return None
     return name if name else None
 
 

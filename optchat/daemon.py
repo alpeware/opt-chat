@@ -202,17 +202,21 @@ def extract_workspace_from_transcript(transcript_path: str) -> Optional[str]:
                 if cwd and isinstance(cwd, str):
                     clean_cwd = cwd.strip("\"'")
                     if clean_cwd and not clean_cwd.startswith("/tmp") and "agy_isolated" not in clean_cwd:
-                        return Path(clean_cwd).name
+                        cand = Path(clean_cwd).name
+                        if is_valid_workspace_name(cand):
+                            return cand
                 tfile = args.get("TargetFile") or args.get("AbsolutePath")
                 if tfile and isinstance(tfile, str):
                     clean_file = tfile.strip("\"'")
                     if clean_file and not clean_file.startswith("/tmp") and "agy_isolated" not in clean_file:
                         p = Path(clean_file).parent
                         while p != p.parent:
-                            if (p / ".git").exists():
+                            if (p / ".git").exists() and is_valid_workspace_name(p.name):
                                 return p.name
                             p = p.parent
-                        return Path(clean_file).parent.name
+                        cand = Path(clean_file).parent.name
+                        if is_valid_workspace_name(cand):
+                            return cand
     except Exception as e:
         logger.debug("Failed extracting workspace from transcript %s: %s", transcript_path, e)
     return None
