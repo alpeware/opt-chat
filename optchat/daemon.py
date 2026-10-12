@@ -771,6 +771,95 @@ class OptChatDaemon:
             )
             return res
 
+        elif action == "import_bulk":
+            workspace = req.get("workspace")
+            include_tools = req.get("include_tools", False)
+            force = req.get("force", False)
+            dry_run = req.get("dry_run", False)
+            compact = req.get("compact", False)
+            browse = req.get("browse", False)
+
+            from optchat.bulk_importer import BulkImporter
+            importer = BulkImporter(
+                storage=self.storage,
+                workspace_filter=workspace,
+                skip_tools=not include_tools,
+                force=force,
+            )
+
+            c_cnt, m_cnt = importer.import_all(dry_run=dry_run)
+            if not dry_run and m_cnt > 0:
+                self.view.rebuild()
+                if self.compactor:
+                    self.compactor.pump()
+                self.broadcast(
+                    "import_complete",
+                    f"Bulk imported {m_cnt} messages across {c_cnt} conversations.",
+                    extra={"conversations": c_cnt, "messages": m_cnt, "workspace": workspace},
+                )
+                if browse:
+                    from optchat.visualizer import export_html_to_file
+                    export_html_to_file(self.storage, self.view, self.storage.chat_dir / "browse.html")
+
+            return {
+                "status": "ok",
+                "conversations_count": c_cnt,
+                "messages_count": m_cnt,
+                "dry_run": dry_run,
+                "total_messages": len(self.storage.messages),
+                "tree_nodes": len(self.storage.tree),
+            }
+
+        elif action == "import_agy":
+            tpath_str = req.get("transcript_path", "")
+            skip_tools = req.get("skip_tools", True)
+            t_path = Path(tpath_str)
+            if not t_path.is_file():
+                candidate = Path.home() / ".gemini" / "antigravity-cli" / "brain" / tpath_str / ".system_generated" / "logs" / "transcript.jsonl"
+                if candidate.is_file():
+                    t_path = candidate
+                else:
+                    return {"status": "error", "error": f"Could not find transcript at {tpath_str}"}
+
+            from optchat.importer import import_agy_transcript
+            imported = import_agy_transcript(t_path, self.storage, view=self.view, skip_tool_noise=skip_tools)
+            if imported > 0:
+                self.view.rebuild()
+                if self.compactor:
+                    self.compactor.pump()
+                self.broadcast(
+                    "import_complete",
+                    f"Imported {imported} messages from agy transcript.",
+                    extra={"imported": imported, "transcript": str(t_path)},
+                )
+            return {
+                "status": "ok",
+                "imported_count": imported,
+                "total_messages": len(self.storage.messages),
+                "tree_nodes": len(self.storage.tree),
+            }
+
+        elif action == "import_messages":
+            items = req.get("items", [])
+            if not items:
+                return {"status": "ok", "imported_count": 0}
+            created_msgs = self.storage.append_messages_batch(items)
+            if created_msgs:
+                self.view.rebuild()
+                if self.compactor:
+                    self.compactor.pump()
+                self.broadcast(
+                    "import_complete",
+                    f"Imported {len(created_msgs)} messages.",
+                    extra={"imported": len(created_msgs)},
+                )
+            return {
+                "status": "ok",
+                "imported_count": len(created_msgs),
+                "total_messages": len(self.storage.messages),
+                "tree_nodes": len(self.storage.tree),
+            }
+
         elif action == "exec_sandboxed":
             cmd = req.get("cmd", [])
             ws = Path(req.get("workspace", os.getcwd()))

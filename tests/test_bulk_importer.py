@@ -196,3 +196,137 @@ def test_bulk_importer_filters_compaction_sessions(tmp_path: Path):
 
     storage.close()
 
+
+def test_bulk_importer_tags_workspace(tmp_path: Path):
+    gemini_dir = tmp_path / "gemini_ws_test"
+    cli_dir = gemini_dir / "antigravity-cli"
+    cli_dir.mkdir(parents=True)
+
+    db_path = cli_dir / "conversation_summaries.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE conversation_summaries (
+            conversation_id TEXT PRIMARY KEY,
+            title TEXT,
+            preview TEXT,
+            step_count INTEGER,
+            last_modified_time TEXT,
+            last_user_input_time TEXT,
+            workspace_uris TEXT
+        )
+    """)
+    cur.execute(
+        "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("conv-ws", "Build feature", "feature preview", 2, "2026-10-01 10:00:00", "2026-10-01 10:00:00", '["file:///home/user/src/alpeware/jacquard"]'),
+    )
+    conn.commit()
+    conn.close()
+
+    tpath = cli_dir / "brain" / "conv-ws" / ".system_generated" / "logs" / "transcript.jsonl"
+    tpath.parent.mkdir(parents=True)
+    tpath.write_text(json.dumps({
+        "type": "USER_INPUT",
+        "content": "<USER_REQUEST>\nImplement jacquard feature\n</USER_REQUEST>",
+        "created_at": "2026-10-01T10:00:00Z",
+    }) + "\n" + json.dumps({
+        "type": "PLANNER_RESPONSE",
+        "content": "Implemented jacquard feature.",
+        "created_at": "2026-10-01T10:00:05Z",
+    }) + "\n")
+
+    chat_dir = tmp_path / "chat_storage_ws"
+    storage = Storage(chat_dir)
+    storage.open()
+
+    importer = BulkImporter(
+        storage=storage,
+        workspace_filter="alpeware/jacquard",
+        base_gemini_dir=gemini_dir,
+    )
+
+    c_cnt, m_cnt = importer.import_all()
+    assert c_cnt == 1
+    assert m_cnt == 2
+    assert storage.messages[0].workspace == "jacquard"
+    assert storage.messages[1].workspace == "jacquard"
+
+    storage.close()
+
+
+def test_daemon_ipc_import_actions(tmp_path: Path):
+    from optchat.daemon import OptChatDaemon
+    from optchat.engine_client import EngineClient
+
+    chat_dir = tmp_path / "daemon_chat"
+    sock_path = tmp_path / "engine.sock"
+
+    gemini_dir = tmp_path / "gemini_ipc_test"
+    cli_dir = gemini_dir / "antigravity-cli"
+    cli_dir.mkdir(parents=True)
+
+    db_path = cli_dir / "conversation_summaries.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE conversation_summaries (
+            conversation_id TEXT PRIMARY KEY,
+            title TEXT,
+            preview TEXT,
+            step_count INTEGER,
+            last_modified_time TEXT,
+            last_user_input_time TEXT,
+            workspace_uris TEXT
+        )
+    """)
+    cur.execute(
+        "INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("conv-ipc", "IPC Task", "Task preview", 2, "2026-10-01 10:00:00", "2026-10-01 10:00:00", '["file:///home/user/src/alpeware/jacquard"]'),
+    )
+    conn.commit()
+    conn.close()
+
+    tpath = cli_dir / "brain" / "conv-ipc" / ".system_generated" / "logs" / "transcript.jsonl"
+    tpath.parent.mkdir(parents=True)
+    tpath.write_text(json.dumps({
+        "type": "USER_INPUT",
+        "content": "<USER_REQUEST>\nIPC bulk import test\n</USER_REQUEST>",
+        "created_at": "2026-10-01T10:00:00Z",
+    }) + "\n" + json.dumps({
+        "type": "PLANNER_RESPONSE",
+        "content": "IPC reply test.",
+        "created_at": "2026-10-01T10:00:05Z",
+    }) + "\n")
+
+    daemon = OptChatDaemon(
+        chat_dir=chat_dir,
+        socket_path=sock_path,
+        provider_name="mock",
+    )
+    daemon.start_in_thread()
+
+    client = EngineClient(socket_path=sock_path)
+    assert client.is_daemon_alive() is True
+
+    try:
+        # 1. Test import_messages via IPC
+        msg_res = client.import_messages([("user", "Direct import msg")])
+        assert msg_res["status"] == "ok"
+        assert msg_res["imported_count"] == 1
+        assert msg_res["total_messages"] == 1
+
+        # 2. Test import_agy via IPC
+        agy_res = client.import_agy(str(tpath), skip_tools=True)
+        assert agy_res["status"] == "ok"
+        assert agy_res["imported_count"] == 2
+        assert agy_res["total_messages"] == 3
+
+        # 3. Test import_bulk via IPC with dry_run
+        # Mock base_gemini_dir by monkeypatching Path.home or testing action directly
+        bulk_res = client.import_bulk(workspace="jacquard", dry_run=True)
+        assert bulk_res["status"] == "ok"
+        assert bulk_res["dry_run"] is True
+    finally:
+        daemon.stop_in_thread()
+
+

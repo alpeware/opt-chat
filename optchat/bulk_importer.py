@@ -291,7 +291,7 @@ class BulkImporter:
             return 0, 0
 
         # Collect all messages across candidates
-        all_messages_to_append: List[Tuple[str, str, Optional[str]]] = []
+        all_messages_to_append: List[Tuple[Any, ...]] = []
         cids_imported: Dict[str, Dict[str, Any]] = {}
         history_ts_imported: List[int] = []
 
@@ -300,10 +300,40 @@ class BulkImporter:
             tpath = conv.get("transcript_path")
             summary = conv.get("summary", {})
 
+            ws_name = None
+            if summary:
+                ws_raw = summary.get("workspace")
+                if ws_raw:
+                    try:
+                        arr = json.loads(ws_raw)
+                        if arr and isinstance(arr, list) and arr[0]:
+                            val = arr[0]
+                            if val.startswith("file://"):
+                                val = val[7:]
+                            ws_name = Path(val).name
+                    except Exception:
+                        val = str(ws_raw)
+                        if val.startswith("file://"):
+                            val = val[7:]
+                        ws_name = Path(val).name
+
+            if not ws_name and tpath:
+                try:
+                    from optchat.daemon import extract_workspace_from_transcript
+                    ws_from_t = extract_workspace_from_transcript(str(tpath))
+                    if ws_from_t:
+                        ws_name = Path(ws_from_t).name
+                except Exception:
+                    pass
+
+            if not ws_name and self.workspace_filter:
+                ws_name = Path(self.workspace_filter).name
+
             if tpath:
                 c_msgs = self.extract_messages_from_transcript(tpath)
                 if c_msgs:
-                    all_messages_to_append.extend(c_msgs)
+                    for kind, text, ts in c_msgs:
+                        all_messages_to_append.append((kind, text, ts, None, ws_name, None))
                     cids_imported[cid] = {
                         "count": len(c_msgs),
                         "first_ts": c_msgs[0][2],
@@ -317,7 +347,7 @@ class BulkImporter:
                 mtime = summary.get("mtime")
                 if title or preview:
                     note_text = f"[Archived Session {cid[:8]}] {title}: {preview}".strip()
-                    all_messages_to_append.append(("note", note_text, mtime))
+                    all_messages_to_append.append(("note", note_text, mtime, None, ws_name, None))
                     cids_imported[cid] = {
                         "count": 1,
                         "first_ts": mtime,
@@ -336,7 +366,9 @@ class BulkImporter:
             dt = datetime.datetime.fromtimestamp(ts_ms / 1000.0, datetime.timezone.utc)
             iso_str = dt.isoformat()
             kind = "user" if not display.startswith("/") else "note"
-            all_messages_to_append.append((kind, display, iso_str))
+            h_ws_raw = h.get("workspace")
+            h_ws = Path(h_ws_raw).name if h_ws_raw else (Path(self.workspace_filter).name if self.workspace_filter else None)
+            all_messages_to_append.append((kind, display, iso_str, None, h_ws, None))
             history_ts_imported.append(ts_ms)
 
         total_msgs = len(all_messages_to_append)

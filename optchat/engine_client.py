@@ -251,6 +251,88 @@ class EngineClient:
     def sync_apply(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self.call("sync_apply", timeout=60.0, payload=payload)
 
+    def import_bulk(
+        self,
+        workspace: Optional[str] = None,
+        include_tools: bool = False,
+        force: bool = False,
+        dry_run: bool = False,
+        compact: bool = False,
+        browse: bool = False,
+        timeout: float = 300.0,
+    ) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "include_tools": include_tools,
+            "force": force,
+            "dry_run": dry_run,
+            "compact": compact,
+            "browse": browse,
+        }
+        if workspace:
+            kwargs["workspace"] = workspace
+        return self.call("import_bulk", timeout=timeout, **kwargs)
+
+    async def import_bulk_async(
+        self,
+        workspace: Optional[str] = None,
+        include_tools: bool = False,
+        force: bool = False,
+        dry_run: bool = False,
+        compact: bool = False,
+        browse: bool = False,
+        timeout: float = 300.0,
+    ) -> Dict[str, Any]:
+        kwargs: Dict[str, Any] = {
+            "include_tools": include_tools,
+            "force": force,
+            "dry_run": dry_run,
+            "compact": compact,
+            "browse": browse,
+        }
+        if workspace:
+            kwargs["workspace"] = workspace
+        return await self.call_async("import_bulk", timeout=timeout, **kwargs)
+
+    def import_agy(
+        self,
+        transcript_path: str,
+        skip_tools: bool = True,
+        timeout: float = 120.0,
+    ) -> Dict[str, Any]:
+        return self.call(
+            "import_agy",
+            timeout=timeout,
+            transcript_path=transcript_path,
+            skip_tools=skip_tools,
+        )
+
+    async def import_agy_async(
+        self,
+        transcript_path: str,
+        skip_tools: bool = True,
+        timeout: float = 120.0,
+    ) -> Dict[str, Any]:
+        return await self.call_async(
+            "import_agy",
+            timeout=timeout,
+            transcript_path=transcript_path,
+            skip_tools=skip_tools,
+        )
+
+    def import_messages(
+        self,
+        items: List[Any],
+        timeout: float = 120.0,
+    ) -> Dict[str, Any]:
+        return self.call("import_messages", timeout=timeout, items=items)
+
+    async def import_messages_async(
+        self,
+        items: List[Any],
+        timeout: float = 120.0,
+    ) -> Dict[str, Any]:
+        return await self.call_async("import_messages", timeout=timeout, items=items)
+
 
 class ProxyStorage:
     """Storage proxy delegating mutations and queries to OptChatDaemon via EngineClient."""

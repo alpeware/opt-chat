@@ -534,10 +534,15 @@ def main() -> None:
                 console.print(f"  [dim]#{m.get('i', 0):>3}[/dim] [{kind_style}][{kind}][/{kind_style}] [dim]{dt}[/dim] {text_preview}", soft_wrap=True)
 
     elif args.subcommand == "import":
-        storage = Storage(Path(args.chat_dir))
-        storage.open()
+        chat_dir = Path(args.chat_dir)
+        from optchat.engine_client import EngineClient
+        client = EngineClient(socket_path=chat_dir / "engine.sock")
         input_path = Path(args.file)
-        count = 0
+        if not input_path.is_file():
+            console.print(f"[red]Input file not found: {input_path}[/red]")
+            return
+
+        lines_to_import: list[dict[str, str]] = []
         with open(input_path, "r", encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
@@ -546,22 +551,29 @@ def main() -> None:
                 try:
                     data = json.loads(stripped)
                     if isinstance(data, dict) and "text" in data:
-                        storage.append_message(data.get("kind", args.kind), data["text"])
+                        lines_to_import.append({"kind": data.get("kind", args.kind), "text": data["text"]})
                     else:
-                        storage.append_message(args.kind, stripped)
+                        lines_to_import.append({"kind": args.kind, "text": stripped})
                 except Exception:
-                    storage.append_message(args.kind, stripped)
+                    lines_to_import.append({"kind": args.kind, "text": stripped})
+
+        if client.is_daemon_alive():
+            items = [(item["kind"], item["text"]) for item in lines_to_import]
+            res = client.import_messages(items)
+            cnt = res.get("imported_count", len(items))
+            console.print(f"[green]Imported {cnt} messages via daemon as kind '{args.kind}'.[/green]")
+        else:
+            storage = Storage(chat_dir)
+            storage.open()
+            count = 0
+            for item in lines_to_import:
+                storage.append_message(item["kind"], item["text"])
                 count += 1
-        console.print(f"[green]Imported {count} messages as kind '{args.kind}'.[/green]")
-        storage.close()
+            console.print(f"[green]Imported {count} messages as kind '{args.kind}'.[/green]")
+            storage.close()
 
     elif args.subcommand == "import-agy":
-        from optchat.importer import import_agy_transcript
-        storage = Storage(Path(args.chat_dir))
-        storage.open()
-        view = LiveView(storage)
-        view.rebuild()
-
+        chat_dir = Path(args.chat_dir)
         t_path = Path(args.transcript)
         if not t_path.is_file():
             candidate = Path.home() / ".gemini" / "antigravity-cli" / "brain" / args.transcript / ".system_generated" / "logs" / "transcript.jsonl"
@@ -569,50 +581,91 @@ def main() -> None:
                 t_path = candidate
             else:
                 console.print(f"[red]Could not find transcript at {args.transcript} or {candidate}[/red]")
-                storage.close()
                 return
 
-        imported = import_agy_transcript(t_path, storage, view=view, skip_tool_noise=args.skip_tools)
-        console.print(f"[green]Successfully imported {imported} messages from agy transcript into {storage.chat_dir}![/green]")
-        storage.close()
+        from optchat.engine_client import EngineClient
+        client = EngineClient(socket_path=chat_dir / "engine.sock")
+        if client.is_daemon_alive():
+            res = client.import_agy(str(t_path), skip_tools=args.skip_tools)
+            if res.get("status") == "ok":
+                imported = res.get("imported_count", 0)
+                console.print(f"[green]Successfully imported {imported} messages from agy transcript into daemon storage![/green]")
+            else:
+                console.print(f"[red]Daemon import error: {res.get('error')}[/red]")
+        else:
+            from optchat.importer import import_agy_transcript
+            storage = Storage(chat_dir)
+            storage.open()
+            view = LiveView(storage)
+            view.rebuild()
+
+            imported = import_agy_transcript(t_path, storage, view=view, skip_tool_noise=args.skip_tools)
+            console.print(f"[green]Successfully imported {imported} messages from agy transcript into {storage.chat_dir}![/green]")
+            storage.close()
 
     elif args.subcommand == "import-bulk":
-        from optchat.bulk_importer import BulkImporter, run_bulk_compaction
         chat_dir = Path(args.chat_dir)
-        storage = Storage(chat_dir)
-        storage.open()
-        view = LiveView(storage)
-        view.rebuild()
+        from optchat.engine_client import EngineClient
+        client = EngineClient(socket_path=chat_dir / "engine.sock")
+        if client.is_daemon_alive():
+            res = client.import_bulk(
+                workspace=args.workspace,
+                include_tools=args.include_tools,
+                force=args.force,
+                dry_run=args.dry_run,
+                compact=args.compact,
+                browse=args.browse,
+            )
+            if res.get("status") == "ok":
+                c_cnt = res.get("conversations_count", 0)
+                m_cnt = res.get("messages_count", 0)
+                tot_msgs = res.get("total_messages", 0)
+                tot_tree = res.get("tree_nodes", 0)
+                if args.dry_run:
+                    console.print(f"[yellow][DRY RUN] Would import {m_cnt} messages across {c_cnt} conversations.[/yellow]")
+                else:
+                    console.print(f"[bold green]Successfully imported {m_cnt} messages across {c_cnt} conversations via daemon![/bold green]")
+                    console.print(f"[bold green]Current messages: {tot_msgs} | Tree nodes: {tot_tree}[/bold green]")
+                    if args.browse:
+                        console.print(f"[green]Memory report saved to {chat_dir / 'browse.html'}[/green]")
+            else:
+                console.print(f"[red]Daemon import error: {res.get('error')}[/red]")
+        else:
+            from optchat.bulk_importer import BulkImporter, run_bulk_compaction
+            storage = Storage(chat_dir)
+            storage.open()
+            view = LiveView(storage)
+            view.rebuild()
 
-        importer = BulkImporter(
-            storage=storage,
-            workspace_filter=args.workspace,
-            skip_tools=not args.include_tools,
-            force=args.force,
-        )
+            importer = BulkImporter(
+                storage=storage,
+                workspace_filter=args.workspace,
+                skip_tools=not args.include_tools,
+                force=args.force,
+            )
 
-        c_cnt, m_cnt = importer.import_all(dry_run=args.dry_run)
-        if not args.dry_run:
-            if m_cnt > 0:
-                view.rebuild()
-                console.print(f"[bold green]Rebuilt live view. Current messages: {len(storage.messages)} | Tree nodes: {len(storage.tree)}[/bold green]")
+            c_cnt, m_cnt = importer.import_all(dry_run=args.dry_run)
+            if not args.dry_run:
+                if m_cnt > 0:
+                    view.rebuild()
+                    console.print(f"[bold green]Rebuilt live view. Current messages: {len(storage.messages)} | Tree nodes: {len(storage.tree)}[/bold green]")
 
-            if args.compact:
-                asyncio.run(
-                    run_bulk_compaction(
-                        storage=storage,
-                        view=view,
-                        provider_name=getattr(args, "provider", "agy"),
-                        model=getattr(args, "model", None),
+                if args.compact:
+                    asyncio.run(
+                        run_bulk_compaction(
+                            storage=storage,
+                            view=view,
+                            provider_name=getattr(args, "provider", "agy"),
+                            model=getattr(args, "model", None),
+                        )
                     )
-                )
 
-            if args.browse:
-                target_out = storage.chat_dir / "browse.html"
-                out_path = export_html_to_file(storage, view, target_out)
-                console.print(f"[green]Memory report saved to {out_path}[/green]")
+                if args.browse:
+                    target_out = storage.chat_dir / "browse.html"
+                    out_path = export_html_to_file(storage, view, target_out)
+                    console.print(f"[green]Memory report saved to {out_path}[/green]")
 
-        storage.close()
+            storage.close()
 
     elif args.subcommand == "daemon":
         from optchat.daemon import run_daemon

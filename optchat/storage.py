@@ -417,22 +417,44 @@ class Storage:
         for item in items:
             ws_val = None
             dev_val = None
+            msg_key = None
             if isinstance(item, Message):
                 kind, text = item.kind, item.text
                 msg_date = item.date
                 msg_key = item.key
                 ws_val = item.workspace
                 dev_val = item.device
-            elif len(item) == 6:
-                kind, text, date_iso, msg_key, ws_val, dev_val = item
-                msg_date = date_iso if date_iso else now_iso_default
-            elif len(item) == 4:
-                kind, text, date_iso, msg_key = item
-                msg_date = date_iso if date_iso else now_iso_default
+            elif isinstance(item, dict):
+                kind = item.get("kind", "note")
+                text = item.get("text", "")
+                msg_date = item.get("date") or now_iso_default
+                msg_key = item.get("key")
+                ws_val = item.get("workspace")
+                dev_val = item.get("device")
+            elif isinstance(item, (list, tuple)):
+                if len(item) == 6:
+                    kind, text, date_iso, msg_key, ws_val, dev_val = item
+                    msg_date = date_iso if date_iso else now_iso_default
+                elif len(item) == 5:
+                    kind, text, date_iso, msg_key, ws_val = item
+                    msg_date = date_iso if date_iso else now_iso_default
+                elif len(item) == 4:
+                    kind, text, date_iso, msg_key = item
+                    msg_date = date_iso if date_iso else now_iso_default
+                elif len(item) == 3:
+                    kind, text, date_iso = item
+                    msg_date = date_iso if date_iso else now_iso_default
+                elif len(item) == 2:
+                    kind, text = item
+                    msg_date = now_iso_default
+                else:
+                    kind = str(item[0]) if item else "note"
+                    text = str(item[1]) if len(item) > 1 else ""
+                    msg_date = now_iso_default
             else:
-                kind, text, date_iso = item
-                msg_date = date_iso if date_iso else now_iso_default
-                msg_key = None
+                kind = "note"
+                text = str(item)
+                msg_date = now_iso_default
 
             if kind == "echo":
                 text = cap_tool_output(text, CAP)
