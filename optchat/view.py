@@ -174,13 +174,17 @@ class LiveView:
         """Reconstruct view at startup. Loads view.json if present, catching up to new messages."""
         total = len(self.storage.messages)
         if self.load_view():
+            changed = False
             # Check if new messages were appended since view.json was saved
             if self.parts and self.parts[-1].end < total:
                 start_i = self.parts[-1].end
                 for i in range(start_i, total):
                     self.parts.append(Part(0, i))
-                if self.compute_size() > self.budget:
-                    self.fit(target=self.min_budget)
+                changed = True
+            if self.compute_size() > self.budget:
+                self.fit(target=self.min_budget)
+                changed = True
+            if changed:
                 self.save_view()
             self._notify_settle()
             return
@@ -326,13 +330,17 @@ class CompactionView(LiveView):
         
         The view ends at the node: it holds the lines before the message,
         or for a merge the lines up to the merge's last message. Only built lines are in it.
+        A compaction's view stops at the first unbuilt line, so no call ever sees a placeholder.
         """
         lines: List[str] = []
         for part in self.parts:
-            if part.end <= end_message_idx:
-                node = self.storage.get_node(part.l, part.i)
-                if node is not None:
-                    lines.append(flatten_newlines(node.text))
+            if part.end > end_message_idx:
+                break
+            node = self.storage.get_node(part.l, part.i)
+            if node is None:
+                # Stop at the first unbuilt line
+                break
+            lines.append(flatten_newlines(node.text))
         body = "\n".join(lines)
         if body:
             return f"<chat>\n{body}\n</chat>"

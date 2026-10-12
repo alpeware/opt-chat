@@ -74,14 +74,24 @@ class Compactor:
         self._queued.clear()
 
     def _seed_ready_queue(self) -> None:
-        """Queue all currently unbuilt nodes whose predecessors are ready."""
+        """Queue all currently unbuilt nodes whose predecessors are ready (UniiChat §4)."""
         total_messages = len(self.storage.messages)
         if total_messages == 0:
             return
 
-        first_unbuilt = self.view.first_unbuilt_message()
+        # 1. Level 0 nodes: start once fewer than concurrency lines before it are unbuilt
+        unbuilt_before = 0
+        for i in range(total_messages):
+            node_key = (0, i)
+            if not self.storage.has_node(0, i):
+                if unbuilt_before < self.concurrency:
+                    if node_key not in self.busy and node_key not in self._queued:
+                        self.ready_queue.append((0, i, i))
+                        self._queued.add(node_key)
+                unbuilt_before += 1
 
-        l = 0
+        # 2. Merge nodes (l > 0): start once both halves are built
+        l = 1
         while (1 << l) <= total_messages:
             node_span = 1 << l
             i = 0
@@ -89,15 +99,14 @@ class Compactor:
                 node_key = (l, i)
                 if not self.storage.has_node(l, i) and node_key not in self.busy and node_key not in self._queued:
                     if self._is_ready(l, i):
-                        end = i if l == 0 else (i + 1) * node_span
-                        if end <= first_unbuilt:
-                            self.ready_queue.append((l, i, end))
-                            self._queued.add(node_key)
+                        end = (i + 1) * node_span
+                        self.ready_queue.append((l, i, end))
+                        self._queued.add(node_key)
                 i += 1
             l += 1
 
     def _check_and_enqueue_dependents(self, l: int, i: int) -> None:
-        """Enqueue parent merge node if both sibling children are now built."""
+        """Enqueue parent merge node or subsequent unbuilt message nodes (UniiChat §4)."""
         parent_l = l + 1
         parent_i = i // 2
         parent_key = (parent_l, parent_i)
@@ -106,10 +115,20 @@ class Compactor:
             if self._is_ready(parent_l, parent_i):
                 node_span = 1 << parent_l
                 end = (parent_i + 1) * node_span
-                first_unbuilt = self.view.first_unbuilt_message()
-                if end <= first_unbuilt:
-                    self.ready_queue.append((parent_l, parent_i, end))
-                    self._queued.add(parent_key)
+                self.ready_queue.append((parent_l, parent_i, end))
+                self._queued.add(parent_key)
+
+        if l == 0:
+            total_messages = len(self.storage.messages)
+            unbuilt_before = 0
+            for next_i in range(total_messages):
+                k = (0, next_i)
+                if not self.storage.has_node(0, next_i):
+                    if unbuilt_before < self.concurrency:
+                        if k not in self.busy and k not in self._queued:
+                            self.ready_queue.append((0, next_i, next_i))
+                            self._queued.add(k)
+                    unbuilt_before += 1
 
     def pump(self) -> None:
         """Start ready nodes from the queue up to concurrency limit (UniiChat §4)."""
