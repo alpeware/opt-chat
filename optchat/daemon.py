@@ -552,23 +552,23 @@ class OptChatDaemon:
                     "pid": self.web_process.pid if self.web_process else None,
                 }
 
-            # Discover known workspaces from recent messages + current active workspace
+            # Discover known workspaces from all messages + current active workspace
             known_workspaces = set()
             if self.workspace:
                 known_workspaces.add(self.workspace.name)
             elif os.getcwd():
                 known_workspaces.add(Path.cwd().name)
 
-            ignored_labels = {"subagent", "subagents", "agent", "note", "talk", "user", "work", "tool", "echo", "none"}
+            ignored_labels = {"subagent", "subagents", "agent", "note", "talk", "user", "work", "tool", "echo", "none", "all"}
             if self.storage and self.storage.messages:
-                for m in self.storage.messages[-500:]:
+                for m in self.storage.messages:
                     if m.workspace and m.workspace.lower() not in ignored_labels:
                         known_workspaces.add(m.workspace)
                     elif m.text:
-                        mat = re.match(r"^\[([a-zA-Z0-9_\-\.]+)\]", m.text)
+                        mat = re.search(r"\[([a-zA-Z0-9_\-\.]+)\]", m.text)
                         if mat:
                             lbl = mat.group(1)
-                            if lbl.lower() not in ignored_labels and not lbl.startswith("http"):
+                            if lbl.lower() not in ignored_labels and not lbl.startswith("http") and len(lbl) < 40:
                                 known_workspaces.add(lbl)
 
             return {

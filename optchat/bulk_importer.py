@@ -35,6 +35,37 @@ logger = logging.getLogger("optchat.bulk_importer")
 console = Console()
 
 
+def clean_workspace_name(ws_raw: Any) -> Optional[str]:
+    """Clean and normalize a workspace string into a directory name."""
+    if not ws_raw:
+        return None
+    val = None
+    if isinstance(ws_raw, list):
+        val = str(ws_raw[0]) if ws_raw else None
+    elif isinstance(ws_raw, str):
+        s = ws_raw.strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                arr = json.loads(s)
+                if arr and isinstance(arr, list) and arr[0]:
+                    val = str(arr[0])
+            except Exception:
+                pass
+        if not val:
+            val = s
+    else:
+        val = str(ws_raw)
+
+    if not val:
+        return None
+
+    val = re.sub(r'^[\[\"\'\s]+|[\]\"\'\s]+$', '', val).strip()
+    if val.startswith("file://"):
+        val = val[7:]
+    name = Path(val).name.strip("[]\"' ")
+    return name if name else None
+
+
 class BulkImporter:
     def __init__(
         self,
@@ -153,6 +184,19 @@ class BulkImporter:
                             if cid:
                                 matched_cids.add(cid)
                                 hist_cids.add(cid)
+                                if cid not in db_summaries:
+                                    db_summaries[cid] = {
+                                        "cid": cid,
+                                        "title": disp,
+                                        "preview": disp,
+                                        "steps": 1,
+                                        "mtime": "",
+                                        "utime": "",
+                                        "workspace": ws,
+                                        "matched_workspace": True,
+                                    }
+                                elif not db_summaries[cid].get("workspace") and ws:
+                                    db_summaries[cid]["workspace"] = ws
                             matched_history.append(d)
             except Exception as err:
                 logger.warning("Could not read history.jsonl: %s", err)
@@ -300,34 +344,19 @@ class BulkImporter:
             tpath = conv.get("transcript_path")
             summary = conv.get("summary", {})
 
-            ws_name = None
-            if summary:
-                ws_raw = summary.get("workspace")
-                if ws_raw:
-                    try:
-                        arr = json.loads(ws_raw)
-                        if arr and isinstance(arr, list) and arr[0]:
-                            val = arr[0]
-                            if val.startswith("file://"):
-                                val = val[7:]
-                            ws_name = Path(val).name
-                    except Exception:
-                        val = str(ws_raw)
-                        if val.startswith("file://"):
-                            val = val[7:]
-                        ws_name = Path(val).name
+            ws_name = clean_workspace_name(summary.get("workspace")) if summary else None
 
             if not ws_name and tpath:
                 try:
                     from optchat.daemon import extract_workspace_from_transcript
                     ws_from_t = extract_workspace_from_transcript(str(tpath))
                     if ws_from_t:
-                        ws_name = Path(ws_from_t).name
+                        ws_name = clean_workspace_name(ws_from_t)
                 except Exception:
                     pass
 
             if not ws_name and self.workspace_filter:
-                ws_name = Path(self.workspace_filter).name
+                ws_name = clean_workspace_name(self.workspace_filter)
 
             if tpath:
                 c_msgs = self.extract_messages_from_transcript(tpath)
@@ -367,7 +396,7 @@ class BulkImporter:
             iso_str = dt.isoformat()
             kind = "user" if not display.startswith("/") else "note"
             h_ws_raw = h.get("workspace")
-            h_ws = Path(h_ws_raw).name if h_ws_raw else (Path(self.workspace_filter).name if self.workspace_filter else None)
+            h_ws = clean_workspace_name(h_ws_raw) or clean_workspace_name(self.workspace_filter)
             all_messages_to_append.append((kind, display, iso_str, None, h_ws, None))
             history_ts_imported.append(ts_ms)
 

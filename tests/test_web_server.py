@@ -153,3 +153,47 @@ async def test_web_server_endpoints(tmp_path: Path):
     finally:
         await client.close()
         server.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_web_server_workspace_discovery(tmp_path: Path):
+    storage_dir = tmp_path / "chat_discovery"
+    storage = Storage(storage_dir)
+    storage.open()
+    # Add messages with older and newer workspaces beyond 500 threshold
+    storage.append_message("user", "Jacquard design", workspace="jacquard")
+    for _ in range(505):
+        storage.append_message("note", "Intermediate note", workspace="desk")
+    storage.append_message("user", "Gsuite tasks", workspace="gsuite-cli")
+    storage.append_message("talk", "Gemma runner", workspace="gemma-4-developer-agent")
+    storage.append_message("user", "OptChat web", workspace="opt-chat")
+    storage.close()
+
+    server = OptChatWebServer(chat_dir=storage_dir, provider_name="mock")
+    await server.init_engine()
+
+    client = TestClient(TestServer(server.app))
+    await client.start_server()
+
+    try:
+        res = await client.get("/api/state")
+        assert res.status == 200
+        state = await res.json()
+        workspaces = state.get("workspaces", [])
+        # All workspaces should be discovered even if older than 500 messages
+        assert "jacquard" in workspaces
+        assert "gsuite-cli" in workspaces
+        assert "gemma-4-developer-agent" in workspaces
+        assert "opt-chat" in workspaces
+        assert "desk" in workspaces
+
+        # Test workspace filtering
+        res_ws = await client.get("/api/history?workspace=jacquard")
+        assert res_ws.status == 200
+        history_ws = await res_ws.json()
+        assert len(history_ws) == 1
+        assert history_ws[0]["workspace"] == "jacquard"
+    finally:
+        await client.close()
+        server.shutdown()
+
