@@ -644,7 +644,15 @@ class OptChatWebServer:
             if category_filter:
                 kwargs["category"] = category_filter
             res = await self.engine_client.call_async("get_history", **kwargs)
-            return web.json_response(res.get("messages", []))
+            history_msgs = res.get("messages", [])
+            if getattr(self, "telemetry", None) and history_msgs:
+                mids = [m["i"] for m in history_msgs if "i" in m]
+                tok_map = self.telemetry.get_tokens_for_message_ids(mids)
+                for m in history_msgs:
+                    mid = m.get("i")
+                    if mid in tok_map and "tokens" not in m:
+                        m["tokens"] = tok_map[mid]
+            return web.json_response(history_msgs)
 
         assert self.storage is not None
         storage_msgs = self.storage.messages
@@ -678,6 +686,13 @@ class OptChatWebServer:
             for m in msgs
             if m.kind in ("user", "talk", "note", "work")
         ]
+        if getattr(self, "telemetry", None) and result:
+            mids = [m["i"] for m in result if "i" in m]
+            tok_map = self.telemetry.get_tokens_for_message_ids(mids)
+            for m in result:
+                mid = m.get("i")
+                if mid in tok_map:
+                    m["tokens"] = tok_map[mid]
         return web.json_response(result)
 
     async def handle_api_view(self, request: web.Request) -> web.Response:

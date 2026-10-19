@@ -309,13 +309,29 @@ function handleStreamEvent(event) {
     document.getElementById('chat-stream').insertBefore(toolEl, target);
     scrollToBottom();
   } else if (event.type === 'subagent_complete') {
+    const tokens = event.extra ? event.extra.tokens : null;
+    if (tokens) {
+      const workRows = document.querySelectorAll('#chat-stream .message-row.work');
+      if (workRows.length > 0) {
+        const lastWork = workRows[workRows.length - 1];
+        if (!lastWork.querySelector('.token-badge')) {
+          attachTokenBadgeToRow(lastWork, tokens);
+        }
+      }
+    }
     scrollToBottom();
+    fetchTelemetrySummary();
   } else if (event.type === 'subagent_report') {
     const repText = (event.extra && event.extra.report) || event.content;
     const role = (event.extra && event.extra.role) || 'Subagent';
-    appendMessage('work', `### 📋 Subagent Report: ${role}\n\n${repText}`, new Date().toISOString(), false);
+    const b = appendMessage('work', `### 📋 Subagent Report: ${role}\n\n${repText}`, new Date().toISOString(), false);
+    if (b && event.extra && event.extra.tokens) {
+      const r = b.closest('.message-row');
+      if (r) attachTokenBadgeToRow(r, event.extra.tokens);
+    }
     scrollToBottom();
     fetchState();
+    fetchTelemetrySummary();
   } else if (event.type === 'error') {
     const req = findInFlightRequest(event);
     if (req) {
@@ -398,6 +414,7 @@ function handleStreamEvent(event) {
     if (matchedRow) {
       if (msgId !== undefined && msgId !== null) matchedRow.setAttribute('data-msg-id', String(msgId));
       enrichMessageRow(matchedRow, kind, ws, dev, date);
+      if (event.extra && event.extra.tokens) attachTokenBadgeToRow(matchedRow, event.extra.tokens);
       scrollToBottom();
       fetchState();
       return;
@@ -410,6 +427,7 @@ function handleStreamEvent(event) {
         if (r) {
           r.setAttribute('data-raw-text', text);
           if (msgId !== undefined && msgId !== null) r.setAttribute('data-msg-id', String(msgId));
+          if (event.extra && event.extra.tokens) attachTokenBadgeToRow(r, event.extra.tokens);
         }
       }
       scrollToBottom();
@@ -429,6 +447,7 @@ function handleStreamEvent(event) {
       }
       inFlightRequests.delete(req.reqId);
       fetchState();
+      fetchTelemetrySummary();
       return;
     }
     if (currentAssistantBubble) {
@@ -443,7 +462,21 @@ function handleStreamEvent(event) {
       currentAssistantBubble = null;
       currentStreamedText = '';
     }
+    if (tokens) {
+      if (event.extra && event.extra.talk_i) {
+        const talkRow = document.querySelector(`.message-row[data-msg-id="${event.extra.talk_i}"]`);
+        if (talkRow) attachTokenBadgeToRow(talkRow, tokens);
+      }
+      const rows = document.querySelectorAll('#chat-stream .message-row.talk');
+      if (rows.length > 0) {
+        const lastRow = rows[rows.length - 1];
+        if (!lastRow.querySelector('.token-badge')) {
+          attachTokenBadgeToRow(lastRow, tokens);
+        }
+      }
+    }
     fetchState();
+    fetchTelemetrySummary();
   }
 }
 
@@ -657,6 +690,9 @@ async function fetchHistory() {
           if (r) {
             r.setAttribute('data-msg-id', String(m.i));
             r.setAttribute('data-raw-text', (m.text || '').trim());
+            if (m.tokens) {
+              attachTokenBadgeToRow(r, m.tokens);
+            }
           }
         }
       });
@@ -1730,6 +1766,15 @@ function formatTokens(num) {
   return n.toLocaleString();
 }
 
+function formatLatency(ms) {
+  if (ms === null || ms === undefined || isNaN(ms)) return '-';
+  const n = Number(ms);
+  if (n <= 0) return '-';
+  if (n >= 60000) return (n / 60000).toFixed(1) + 'm';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 's';
+  return Math.round(n) + 'ms';
+}
+
 function attachTokenBadgeToRow(row, tokens) {
   if (!row || !tokens) return;
   const header = row.querySelector('.message-header');
@@ -1743,8 +1788,9 @@ function attachTokenBadgeToRow(row, tokens) {
   const cacheTok = formatTokens(tokens.cache_read || 0);
   const cost = tokens.cost_usd != null ? Number(tokens.cost_usd).toFixed(4) : '0.0000';
   const tot = formatTokens(tokens.total || 0);
+  const latStr = tokens.duration_ms ? ` | Latency: ${formatLatency(tokens.duration_ms)}` : '';
 
-  badge.title = `Input: ${inTok} | Output: ${outTok} | Cache: ${cacheTok} | Est. Cost: $${cost}`;
+  badge.title = `Input: ${inTok} | Output: ${outTok} | Cache: ${cacheTok}${latStr} | Est. Cost: $${cost}`;
   badge.textContent = `⚡ ${tot} ($${cost})`;
   header.appendChild(badge);
 }
@@ -1827,7 +1873,7 @@ function renderTelemetryUI(data) {
   if (totalCostEl) totalCostEl.textContent = `$${(summary.total_cost_usd || 0).toFixed(4)}`;
   if (subCostEl) subCostEl.textContent = `Across ${Array.isArray(data.by_model) ? data.by_model.length : 0} models`;
   if (totalReqsEl) totalReqsEl.textContent = (summary.total_requests || 0).toLocaleString();
-  if (subReqsEl) subReqsEl.textContent = `Avg Latency: ${summary.avg_duration_ms ? Math.round(summary.avg_duration_ms) + 'ms' : '-'}`;
+  if (subReqsEl) subReqsEl.textContent = `Avg Latency: ${formatLatency(summary.avg_duration_ms)}`;
 
   const hitRate = summary.cache_hit_rate != null ? (summary.cache_hit_rate * 100).toFixed(1) + '%' : '0.0%';
   if (cacheHitEl) cacheHitEl.textContent = hitRate;
@@ -1844,7 +1890,7 @@ function renderTelemetryUI(data) {
       chartContainer.innerHTML = daily.map(d => {
         const heightPct = Math.max(Math.round(((d.total_tokens || 0) / maxTok) * 100), 3);
         const costStr = (d.cost_usd || 0).toFixed(4);
-        const tooltip = `${d.date}: ${formatTokens(d.total_tokens)} tokens ($${costStr})`;
+        const tooltip = `${d.date}: ${formatTokens(d.total_tokens)} tokens ($${costStr})${d.avg_duration_ms ? ' · Latency: ' + formatLatency(d.avg_duration_ms) : ''}`;
         const shortDate = d.date.length >= 10 ? d.date.slice(5) : d.date;
         return `
           <div class="chart-bar-group" title="${escapeHtml(tooltip)}">
@@ -1905,7 +1951,7 @@ function renderTelemetryUI(data) {
         const timeStr = formatTimestamp(item.timestamp || item.created_at);
         const inOut = `${formatTokens(item.input_tokens || 0)} / ${formatTokens(item.output_tokens || 0)}`;
         const costStr = `$${(item.cost_usd || 0).toFixed(4)}`;
-        const latStr = item.duration_ms ? Math.round(item.duration_ms) + 'ms' : '-';
+        const latStr = formatLatency(item.duration_ms);
         return `
           <tr>
             <td>${escapeHtml(timeStr)}</td>

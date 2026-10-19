@@ -447,3 +447,32 @@ class TelemetryStore:
             return dict(row) if row else None
         finally:
             conn.close()
+
+    def get_tokens_for_message_ids(self, message_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        """Lookup token consumption metrics for a list of message IDs."""
+        if not message_ids:
+            return {}
+        conn = self._get_connection()
+        try:
+            placeholders = ",".join(["?"] * len(message_ids))
+            query = f"""
+                SELECT message_id, input_tokens, output_tokens, cache_read_tokens, total_tokens, cost_usd
+                FROM token_usage
+                WHERE message_id IN ({placeholders})
+            """
+            rows = conn.execute(query, message_ids).fetchall()
+            res: Dict[int, Dict[str, Any]] = {}
+            for r in rows:
+                mid = r["message_id"]
+                if mid is not None:
+                    res[mid] = {
+                        "input": r["input_tokens"],
+                        "output": r["output_tokens"],
+                        "cache_read": r["cache_read_tokens"],
+                        "total": r["total_tokens"],
+                        "cost_usd": r["cost_usd"],
+                    }
+            return res
+        finally:
+            conn.close()
+

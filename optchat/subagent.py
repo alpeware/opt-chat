@@ -144,6 +144,7 @@ class SubagentManager:
 
         max_steps = 15
         for _ in range(max_steps):
+            t0 = time.time()
             try:
                 response: LLMResponse = await self.provider.chat(
                     system=system_prompt,
@@ -156,6 +157,7 @@ class SubagentManager:
                 task.report = f"Subagent error during model turn: {err}"
                 return task.report
 
+            sub_duration_ms = int((time.time() - t0) * 1000)
             if getattr(self, "telemetry", None):
                 try:
                     self.telemetry.record_turn(
@@ -164,6 +166,7 @@ class SubagentManager:
                         input_tokens=response.prompt_tokens,
                         output_tokens=response.completion_tokens,
                         cache_read_tokens=response.cached_tokens,
+                        duration_ms=sub_duration_ms,
                         source="subagent",
                         role=task.id,
                         provider=getattr(self.provider, "name", "agy"),

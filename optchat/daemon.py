@@ -15,13 +15,14 @@ from pathlib import Path
 import re
 import signal
 import sys
+import time
 from typing import Any, Dict, List, Optional, Set
 
 from optchat.compactor import Compactor
 from optchat.constants import VIEW
 from optchat.providers import create_provider
 from optchat.storage import Message, Storage, is_valid_workspace_name
-from optchat.telemetry import TelemetryStore
+from optchat.telemetry import TelemetryStore, estimate_cost_usd
 from optchat.tree import node_coords
 from optchat.view import LiveView
 from optchat.visualizer import export_html_to_file
@@ -123,6 +124,8 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
     last_reply = None
     last_reply_idx = None
     last_user = None
+    start_ts_str = None
+    end_ts_str = None
     system_messages = []
     total_input_tokens = 0
     total_output_tokens = 0
@@ -149,6 +152,7 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
                 if content and content.strip():
                     last_reply = content.strip()
                     last_reply_idx = data.get("step_index", 0)
+                    end_ts_str = data.get("created_at") or data.get("timestamp")
                     total_input_tokens += data.get("input_tokens", 0)
                     total_output_tokens += data.get("output_tokens", 0)
                     total_cache_tokens += data.get("cache_read_tokens", 0)
@@ -167,11 +171,13 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
                     ):
                         return None
                     last_user = extract_user_text(content)
+                    start_ts_str = data.get("created_at") or data.get("timestamp")
                     break
                 elif stype == "SYSTEM_MESSAGE":
-                    system_messages.append(content)
+                    system_messages.append((content, data.get("created_at") or data.get("timestamp")))
                 elif stype == "PLANNER_RESPONSE" and content and content.strip():
                     # Hit previous turn's text reply without finding an explicit user input
+                    start_ts_str = data.get("created_at") or data.get("timestamp")
                     break
 
         if last_reply is not None and last_user is None:
@@ -180,14 +186,18 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
                 # Prefer high-level timer/cron/notification prompts over raw task completions
                 # Note: system_messages were collected walking backwards (most recent first)
                 chosen_sys = None
-                for sm in reversed(system_messages):  # check chronologically (earliest first)
+                for sm, ts in reversed(system_messages):  # check chronologically (earliest first)
                     parsed = parse_system_message_prompt(sm)
                     if not parsed.startswith("Background task "):
                         chosen_sys = parsed
+                        if not start_ts_str:
+                            start_ts_str = ts
                         break
                 if not chosen_sys:
                     # Fallback to the earliest system message in this turn
-                    chosen_sys = parse_system_message_prompt(system_messages[-1])
+                    chosen_sys = parse_system_message_prompt(system_messages[-1][0])
+                    if not start_ts_str:
+                        start_ts_str = system_messages[-1][1]
                 last_user = f"⏱️ {chosen_sys}"
             else:
                 last_user = "⚙️ Autonomous progress update"
@@ -197,6 +207,15 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
         return None
 
     if last_reply is not None and last_user is not None and last_reply_idx is not None:
+        turn_duration_ms = 0
+        if end_ts_str and start_ts_str:
+            try:
+                t0 = datetime.fromisoformat(start_ts_str.replace("Z", "+00:00"))
+                t1 = datetime.fromisoformat(end_ts_str.replace("Z", "+00:00"))
+                turn_duration_ms = max(0, int((t1 - t0).total_seconds() * 1000))
+            except Exception:
+                pass
+
         return {
             "step_index": last_reply_idx,
             "user": last_user,
@@ -204,6 +223,7 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
             "input_tokens": total_input_tokens,
             "output_tokens": total_output_tokens,
             "cache_read_tokens": total_cache_tokens,
+            "duration_ms": turn_duration_ms,
         }
     return None
 
@@ -702,20 +722,29 @@ class OptChatDaemon:
                     msgs = [m for m in msgs if m.kind == "note"]
 
             recent = msgs[-limit:] if msgs else []
+            messages_list = [
+                {
+                    "i": m.i,
+                    "kind": m.kind,
+                    "text": m.text,
+                    "size": m.size,
+                    "date": m.date,
+                    "workspace": m.workspace,
+                    "device": m.device,
+                }
+                for m in recent
+            ]
+            if getattr(self, "telemetry", None) and messages_list:
+                mids = [m["i"] for m in messages_list if "i" in m]
+                tok_map = self.telemetry.get_tokens_for_message_ids(mids)
+                for m in messages_list:
+                    mid = m.get("i")
+                    if mid in tok_map:
+                        m["tokens"] = tok_map[mid]
+
             return {
                 "status": "ok",
-                "messages": [
-                    {
-                        "i": m.i,
-                        "kind": m.kind,
-                        "text": m.text,
-                        "size": m.size,
-                        "date": m.date,
-                        "workspace": m.workspace,
-                        "device": m.device,
-                    }
-                    for m in recent
-                ],
+                "messages": messages_list,
             }
 
         elif action == "append_message":
@@ -1016,7 +1045,12 @@ class OptChatDaemon:
                         role = sub.get("Role", "Subagent")
                         tname = sub.get("TypeName", "subagent")
                         prompt = sub.get("Prompt", "")
-                        self._active_subagents[cid] = {"role": role, "typeName": tname, "prompt": prompt}
+                        self._active_subagents[cid] = {
+                            "role": role,
+                            "typeName": tname,
+                            "prompt": prompt,
+                            "spawn_time": time.time(),
+                        }
                         self.broadcast(
                             "subagent_spawn",
                             f"Spawned subagent: {role} ({tname}) — {prompt[:120]}",
@@ -1106,14 +1140,20 @@ class OptChatDaemon:
                 sub_tokens = extract_cumulative_tokens_from_transcript(tpath) if tpath else {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
                 sub_ws = self._resolve_workspace_name(payload, tpath)
 
+                sub_spawn_time = sub_info.get("spawn_time")
+                sub_dur_ms = int((time.time() - sub_spawn_time) * 1000) if sub_spawn_time else 0
+                sub_model = payload.get("model") or get_agy_default_model()
+                sub_cost = estimate_cost_usd(sub_model, sub_tokens["input_tokens"], sub_tokens["output_tokens"], sub_tokens["cache_read_tokens"])
+
                 if getattr(self, "telemetry", None):
                     try:
                         self.telemetry.record_turn(
                             workspace=sub_ws,
-                            model=payload.get("model") or get_agy_default_model(),
+                            model=sub_model,
                             input_tokens=sub_tokens["input_tokens"],
                             output_tokens=sub_tokens["output_tokens"],
                             cache_read_tokens=sub_tokens["cache_read_tokens"],
+                            duration_ms=sub_dur_ms,
                             conversation_id=conv_id,
                             source="subagent",
                             role=sub_role,
@@ -1123,14 +1163,15 @@ class OptChatDaemon:
                     except Exception as te:
                         logger.error("Failed recording subagent telemetry: %s", te)
 
-                extra_data: Dict[str, Any] = {"role": sub_role, "conversationId": conv_id}
-                if sub_tokens["input_tokens"] > 0 or sub_tokens["output_tokens"] > 0:
-                    extra_data["tokens"] = {
-                        "input": sub_tokens["input_tokens"],
-                        "output": sub_tokens["output_tokens"],
-                        "cache_read": sub_tokens["cache_read_tokens"],
-                        "total": sub_tokens["input_tokens"] + sub_tokens["output_tokens"],
-                    }
+                sub_tokens_info = {
+                    "input": sub_tokens["input_tokens"],
+                    "output": sub_tokens["output_tokens"],
+                    "cache_read": sub_tokens["cache_read_tokens"],
+                    "total": sub_tokens["input_tokens"] + sub_tokens["output_tokens"],
+                    "cost_usd": sub_cost,
+                    "duration_ms": sub_dur_ms,
+                }
+                extra_data: Dict[str, Any] = {"role": sub_role, "conversationId": conv_id, "tokens": sub_tokens_info}
 
                 self.broadcast(
                     "subagent_complete",
@@ -1156,7 +1197,7 @@ class OptChatDaemon:
                             self.broadcast(
                                 "subagent_report",
                                 f"[{sub_role}] {clean_rep}",
-                                extra={"role": sub_role, "report": clean_rep, "workspace": sub_ws, "conversationId": conv_id},
+                                extra={"role": sub_role, "report": clean_rep, "workspace": sub_ws, "conversationId": conv_id, "tokens": sub_tokens_info},
                             )
                             if self.storage and self.view:
                                 work_msg = self.storage.append_message("work", f"[{sub_role}] {clean_rep}", workspace=sub_ws)
@@ -1206,15 +1247,29 @@ class OptChatDaemon:
                             self._logged_turn_steps[conv_id] = step_idx
                             logger.info("Auto-logged turn #%d from [%s] into memory (msgs #%d, #%d)", step_idx, ws_name, msg1.i, msg2.i)
 
+                            in_tok = turn_info.get("input_tokens", 0)
+                            out_tok = turn_info.get("output_tokens", 0)
+                            cache_tok = turn_info.get("cache_read_tokens", 0)
+                            dur_ms = turn_info.get("duration_ms", 0)
+                            model_name = payload.get("model") or get_agy_default_model()
+                            tokens_info = {
+                                "input": in_tok,
+                                "output": out_tok,
+                                "cache_read": cache_tok,
+                                "total": in_tok + out_tok,
+                                "cost_usd": estimate_cost_usd(model_name, in_tok, out_tok, cache_tok),
+                                "duration_ms": dur_ms,
+                            }
+
                             if getattr(self, "telemetry", None):
                                 try:
-                                    model_name = payload.get("model") or get_agy_default_model()
                                     self.telemetry.record_turn(
                                         workspace=ws_name,
                                         model=model_name,
-                                        input_tokens=turn_info.get("input_tokens", 0),
-                                        output_tokens=turn_info.get("output_tokens", 0),
-                                        cache_read_tokens=turn_info.get("cache_read_tokens", 0),
+                                        input_tokens=in_tok,
+                                        output_tokens=out_tok,
+                                        cache_read_tokens=cache_tok,
+                                        duration_ms=dur_ms,
                                         conversation_id=conv_id,
                                         step_index=step_idx,
                                         message_id=msg2.i,
@@ -1248,12 +1303,19 @@ class OptChatDaemon:
                                     "device": msg2.device,
                                     "conversationId": conv_id,
                                     "date": msg2.date,
+                                    "tokens": tokens_info,
                                 },
                             )
                             self.broadcast(
                                 "turn_complete",
                                 f"Logged turn #{step_idx} from [{ws_name}]",
-                                extra={"workspace": ws_name, "conversationId": conv_id, "user_i": msg1.i, "talk_i": msg2.i},
+                                extra={
+                                    "workspace": ws_name,
+                                    "conversationId": conv_id,
+                                    "user_i": msg1.i,
+                                    "talk_i": msg2.i,
+                                    "tokens": tokens_info,
+                                },
                             )
                         else:
                             self._logged_turn_steps[conv_id] = step_idx
