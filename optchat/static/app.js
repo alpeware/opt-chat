@@ -28,9 +28,11 @@ window.addEventListener('DOMContentLoaded', () => {
   setAppHeight();
   fetchModels();
   fetchState();
+  fetchTelemetrySummary();
   fetchHistory();
   connectEventStream();
   setInterval(fetchState, 5000);
+  setInterval(fetchTelemetrySummary, 15000);
 
   window.addEventListener('hashchange', () => {
     const ws = getWorkspaceFromHash();
@@ -414,12 +416,16 @@ function handleStreamEvent(event) {
     }
     fetchState();
   } else if (event.type === 'turn_complete') {
+    const tokens = event.extra ? event.extra.tokens : null;
     const req = findInFlightRequest(event);
     if (req) {
       if (req.bubble && document.body.contains(req.bubble) && req.streamedText) {
         req.bubble.innerHTML = renderBubbleContent('talk', req.streamedText);
         const row = req.bubble.closest('.message-row');
-        if (row) row.setAttribute('data-raw-text', req.streamedText.trim());
+        if (row) {
+          row.setAttribute('data-raw-text', req.streamedText.trim());
+          if (tokens) attachTokenBadgeToRow(row, tokens);
+        }
       }
       inFlightRequests.delete(req.reqId);
       fetchState();
@@ -429,7 +435,10 @@ function handleStreamEvent(event) {
       if (currentStreamedText) {
         currentAssistantBubble.innerHTML = renderBubbleContent('talk', currentStreamedText);
         const row = currentAssistantBubble.closest('.message-row');
-        if (row) row.setAttribute('data-raw-text', currentStreamedText.trim());
+        if (row) {
+          row.setAttribute('data-raw-text', currentStreamedText.trim());
+          if (tokens) attachTokenBadgeToRow(row, tokens);
+        }
       }
       currentAssistantBubble = null;
       currentStreamedText = '';
@@ -886,6 +895,10 @@ function handleKeyDown(e) {
 }
 
 function quickSend(cmd) {
+  if (cmd === '/tokens' || cmd === '/telemetry') {
+    openTelemetryDrawer();
+    return;
+  }
   document.getElementById('prompt-input').value = cmd;
   sendMessage();
 }
@@ -1349,6 +1362,10 @@ async function sendMessage() {
 
   // If slash command
   if (text.startsWith('/')) {
+    if (text === '/tokens' || text === '/telemetry') {
+      openTelemetryDrawer();
+      return;
+    }
     const bubble = appendMessage('talk', '', new Date().toISOString(), true);
     await handleSlashCommand(text, bubble);
     return;
@@ -1700,4 +1717,208 @@ function stopVoiceDictation() {
     autoGrow(promptInput);
   }
 }
+
+// Telemetry & Token Analytics
+let currentTelemetryDays = 7;
+
+function formatTokens(num) {
+  if (num === null || num === undefined) return '0';
+  const n = Number(num);
+  if (isNaN(n)) return '0';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return n.toLocaleString();
+}
+
+function attachTokenBadgeToRow(row, tokens) {
+  if (!row || !tokens) return;
+  const header = row.querySelector('.message-header');
+  if (!header) return;
+  if (header.querySelector('.token-badge')) return; // already attached
+
+  const badge = document.createElement('span');
+  badge.className = 'token-badge';
+  const inTok = formatTokens(tokens.input || 0);
+  const outTok = formatTokens(tokens.output || 0);
+  const cacheTok = formatTokens(tokens.cache_read || 0);
+  const cost = tokens.cost_usd != null ? Number(tokens.cost_usd).toFixed(4) : '0.0000';
+  const tot = formatTokens(tokens.total || 0);
+
+  badge.title = `Input: ${inTok} | Output: ${outTok} | Cache: ${cacheTok} | Est. Cost: $${cost}`;
+  badge.textContent = `⚡ ${tot} ($${cost})`;
+  header.appendChild(badge);
+}
+
+async function fetchTelemetrySummary() {
+  try {
+    const res = await fetch('/api/telemetry?days=7');
+    if (!res.ok) return;
+    const data = await res.json();
+    const textEl = document.getElementById('pill-tokens-text');
+    if (textEl && data.summary) {
+      const tot = formatTokens(data.summary.total_tokens || 0);
+      const cost = (data.summary.total_cost_usd || 0).toFixed(2);
+      textEl.textContent = `${tot} ($${cost})`;
+    }
+  } catch (e) {
+    console.debug('Failed to fetch telemetry summary:', e);
+  }
+}
+
+function openTelemetryDrawer() {
+  const drawer = document.getElementById('telemetry-drawer');
+  if (drawer) {
+    drawer.style.display = 'block';
+    loadTelemetryData(currentTelemetryDays);
+  }
+}
+
+function closeTelemetryDrawer() {
+  const drawer = document.getElementById('telemetry-drawer');
+  if (drawer) {
+    drawer.style.display = 'none';
+  }
+}
+
+function setTelemetryRange(days) {
+  currentTelemetryDays = days;
+  const pills = document.querySelectorAll('#telemetry-range-pills .range-btn');
+  pills.forEach(btn => {
+    const btnDays = parseInt(btn.getAttribute('data-days'), 10);
+    if (btnDays === days) {
+      btn.classList.add('active');
+    } else {
+      btn.classList.remove('active');
+    }
+  });
+  loadTelemetryData(days);
+}
+
+async function loadTelemetryData(days) {
+  let url = `/api/telemetry?days=${days || 0}`;
+  if (selectedWorkspace && selectedWorkspace !== 'all') {
+    url += `&workspace=${encodeURIComponent(selectedWorkspace)}`;
+  }
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderTelemetryUI(data);
+  } catch (e) {
+    console.error('Failed to load telemetry:', e);
+  }
+}
+
+function renderTelemetryUI(data) {
+  const summary = data.summary || {};
+
+  // Summary Metrics
+  const totalTokensEl = document.getElementById('metric-total-tokens');
+  const subTokensEl = document.getElementById('metric-sub-tokens');
+  const totalCostEl = document.getElementById('metric-total-cost');
+  const subCostEl = document.getElementById('metric-sub-cost');
+  const totalReqsEl = document.getElementById('metric-total-requests');
+  const subReqsEl = document.getElementById('metric-sub-requests');
+  const cacheHitEl = document.getElementById('metric-cache-hit');
+  const subCacheEl = document.getElementById('metric-sub-cache');
+
+  if (totalTokensEl) totalTokensEl.textContent = formatTokens(summary.total_tokens || 0);
+  if (subTokensEl) subTokensEl.textContent = `In: ${formatTokens(summary.total_input_tokens || 0)} · Out: ${formatTokens(summary.total_output_tokens || 0)}`;
+  if (totalCostEl) totalCostEl.textContent = `$${(summary.total_cost_usd || 0).toFixed(4)}`;
+  if (subCostEl) subCostEl.textContent = `Across ${Array.isArray(data.by_model) ? data.by_model.length : 0} models`;
+  if (totalReqsEl) totalReqsEl.textContent = (summary.total_requests || 0).toLocaleString();
+  if (subReqsEl) subReqsEl.textContent = `Avg Latency: ${summary.avg_duration_ms ? Math.round(summary.avg_duration_ms) + 'ms' : '-'}`;
+
+  const hitRate = summary.cache_hit_rate != null ? (summary.cache_hit_rate * 100).toFixed(1) + '%' : '0.0%';
+  if (cacheHitEl) cacheHitEl.textContent = hitRate;
+  if (subCacheEl) subCacheEl.textContent = `Cached: ${formatTokens(summary.total_cache_read_tokens || 0)} tokens`;
+
+  // Daily Chart
+  const chartContainer = document.getElementById('telemetry-daily-chart');
+  if (chartContainer) {
+    const daily = data.daily || [];
+    if (!daily.length) {
+      chartContainer.innerHTML = '<p style="color: var(--text-dim); text-align: center; width: 100%;">No daily data recorded yet.</p>';
+    } else {
+      const maxTok = Math.max(...daily.map(d => d.total_tokens || 0), 1);
+      chartContainer.innerHTML = daily.map(d => {
+        const heightPct = Math.max(Math.round(((d.total_tokens || 0) / maxTok) * 100), 3);
+        const costStr = (d.cost_usd || 0).toFixed(4);
+        const tooltip = `${d.date}: ${formatTokens(d.total_tokens)} tokens ($${costStr})`;
+        const shortDate = d.date.length >= 10 ? d.date.slice(5) : d.date;
+        return `
+          <div class="chart-bar-group" title="${escapeHtml(tooltip)}">
+            <div class="chart-bar-track">
+              <div class="chart-bar-fill" style="height: ${heightPct}%;"></div>
+            </div>
+            <span class="chart-bar-date">${escapeHtml(shortDate)}</span>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+
+  // By Workspace Table
+  const wsTableBody = document.querySelector('#telemetry-ws-table tbody');
+  if (wsTableBody) {
+    const list = data.by_workspace || [];
+    if (!list.length) {
+      wsTableBody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-dim);">No workspace data</td></tr>';
+    } else {
+      wsTableBody.innerHTML = list.map(item => `
+        <tr>
+          <td><strong>${escapeHtml(item.workspace || 'default')}</strong></td>
+          <td>${(item.requests || 0).toLocaleString()}</td>
+          <td>${formatTokens(item.total_tokens || 0)}</td>
+          <td>$${(item.cost_usd || 0).toFixed(4)}</td>
+        </tr>
+      `).join('');
+    }
+  }
+
+  // By Model Table
+  const modelTableBody = document.querySelector('#telemetry-model-table tbody');
+  if (modelTableBody) {
+    const list = data.by_model || [];
+    if (!list.length) {
+      modelTableBody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-dim);">No model data</td></tr>';
+    } else {
+      modelTableBody.innerHTML = list.map(item => `
+        <tr>
+          <td><strong>${escapeHtml(item.model || 'unknown')}</strong></td>
+          <td>${(item.requests || 0).toLocaleString()}</td>
+          <td>${formatTokens(item.total_tokens || 0)}</td>
+          <td>$${(item.cost_usd || 0).toFixed(4)}</td>
+        </tr>
+      `).join('');
+    }
+  }
+
+  // Recent Requests Table
+  const recentTableBody = document.querySelector('#telemetry-recent-table tbody');
+  if (recentTableBody) {
+    const list = data.recent || [];
+    if (!list.length) {
+      recentTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);">No recent requests</td></tr>';
+    } else {
+      recentTableBody.innerHTML = list.map(item => {
+        const timeStr = formatTimestamp(item.timestamp || item.created_at);
+        const inOut = `${formatTokens(item.input_tokens || 0)} / ${formatTokens(item.output_tokens || 0)}`;
+        const costStr = `$${(item.cost_usd || 0).toFixed(4)}`;
+        const latStr = item.duration_ms ? Math.round(item.duration_ms) + 'ms' : '-';
+        return `
+          <tr>
+            <td>${escapeHtml(timeStr)}</td>
+            <td><span class="pill-ws-tag">${escapeHtml(item.workspace || '-')}</span></td>
+            <td>${escapeHtml(item.model || '-')}</td>
+            <td>${inOut}</td>
+            <td>${costStr}</td>
+            <td>${latStr}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+  }
+}
+
 

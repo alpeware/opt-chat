@@ -1201,5 +1201,218 @@ footer {
   background: #dc2626;
 }
 
+/* Telemetry Analytics & Token Badges */
+.pill-tokens {
+  border-color: rgba(245, 158, 11, 0.4) !important;
+  color: #fbbf24 !important;
+}
+.pill-tokens:hover {
+  background: rgba(245, 158, 11, 0.15) !important;
+}
+
+.drawer-wide {
+  max-width: 820px;
+  width: 94vw;
+}
+
+.drawer-title-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.time-range-pills {
+  display: flex;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 999px;
+  padding: 2px;
+  border: 1px solid var(--card-border);
+}
+
+.range-btn {
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.range-btn.active, .range-btn:hover {
+  background: var(--accent);
+  color: #0f172a;
+}
+
+.telemetry-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.telemetry-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.telemetry-card-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+
+.telemetry-card-val {
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: var(--text-main);
+  line-height: 1.2;
+}
+
+.telemetry-card-sub {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.text-green { color: #34d399 !important; }
+.text-blue { color: #38bdf8 !important; }
+
+.telemetry-section {
+  margin-top: 20px;
+}
+
+.telemetry-section-title {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0 0 10px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.telemetry-chart-container {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 16px 12px 8px 12px;
+  overflow-x: auto;
+  min-height: 140px;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.chart-bar-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 32px;
+  height: 120px;
+  justify-content: flex-end;
+}
+
+.chart-bar-track {
+  width: 100%;
+  max-width: 24px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 4px;
+  height: 100px;
+  display: flex;
+  align-items: flex-end;
+  position: relative;
+}
+
+.chart-bar-fill {
+  width: 100%;
+  background: linear-gradient(180deg, #38bdf8, #0284c7);
+  border-radius: 4px;
+  transition: height 0.3s ease;
+  min-height: 3px;
+}
+
+.chart-bar-date {
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.telemetry-grid-two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 640px) {
+  .telemetry-grid-two {
+    grid-template-columns: 1fr;
+  }
+}
+
+.table-responsive {
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--card-border);
+}
+
+.telemetry-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  text-align: left;
+}
+
+.telemetry-table th {
+  background: rgba(255, 255, 255, 0.04);
+  padding: 8px 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--card-border);
+  white-space: nowrap;
+}
+
+.telemetry-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+  white-space: nowrap;
+}
+
+.telemetry-table tr:last-child td {
+  border-bottom: none;
+}
+
+.telemetry-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* Token badge on message bubble header */
+.token-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
 
 

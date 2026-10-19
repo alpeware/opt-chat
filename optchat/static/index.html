@@ -21,6 +21,7 @@
         <span class="pill" id="pill-msgs" onclick="openStats()">Msgs: -</span>
         <span class="pill" id="pill-nodes" onclick="openStats()">Nodes: -</span>
         <span class="pill" id="pill-view" onclick="openStats()">View: -</span>
+        <span class="pill pill-tokens" id="pill-tokens" onclick="openTelemetryDrawer()" title="View Token Consumption &amp; Cost Analytics">⚡ <span id="pill-tokens-text">Tokens: -</span></span>
       </div>
       <div class="header-actions">
         <button class="btn-icon" id="btn-fold-toggle" onclick="toggleFoldedView()">🗂️ <span class="hide-sm" id="btn-fold-label">Folded</span></button>
@@ -132,6 +133,95 @@
         </div>
         <div class="drawer-content" id="tree-content">
           <p style="color: var(--text-dim); text-align: center;">Loading tree view...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telemetry Analytics Drawer -->
+    <div class="drawer-overlay" id="telemetry-drawer" onclick="closeTelemetryDrawer()">
+      <div class="drawer drawer-wide" onclick="event.stopPropagation()">
+        <div class="drawer-header">
+          <div class="drawer-title-group">
+            <span style="font-weight: 700;">⚡ Token Consumption &amp; Cost</span>
+            <div class="time-range-pills" id="telemetry-range-pills">
+              <button type="button" class="range-btn active" data-days="7" onclick="setTelemetryRange(7)">7d</button>
+              <button type="button" class="range-btn" data-days="30" onclick="setTelemetryRange(30)">30d</button>
+              <button type="button" class="range-btn" data-days="0" onclick="setTelemetryRange(0)">All</button>
+            </div>
+          </div>
+          <button class="btn-icon" onclick="closeTelemetryDrawer()">✕</button>
+        </div>
+        <div class="drawer-content" id="telemetry-content">
+          <!-- Summary Cards -->
+          <div class="telemetry-metrics-grid" id="telemetry-summary-cards">
+            <div class="telemetry-card">
+              <span class="telemetry-card-label">Total Tokens</span>
+              <span class="telemetry-card-val" id="metric-total-tokens">-</span>
+              <span class="telemetry-card-sub" id="metric-sub-tokens">In: - · Out: -</span>
+            </div>
+            <div class="telemetry-card">
+              <span class="telemetry-card-label">Est. Cost</span>
+              <span class="telemetry-card-val text-green" id="metric-total-cost">$0.00</span>
+              <span class="telemetry-card-sub" id="metric-sub-cost">Across all models</span>
+            </div>
+            <div class="telemetry-card">
+              <span class="telemetry-card-label">Total Requests</span>
+              <span class="telemetry-card-val" id="metric-total-requests">-</span>
+              <span class="telemetry-card-sub" id="metric-sub-requests">Avg Latency: -</span>
+            </div>
+            <div class="telemetry-card">
+              <span class="telemetry-card-label">Cache Hit Rate</span>
+              <span class="telemetry-card-val text-blue" id="metric-cache-hit">-</span>
+              <span class="telemetry-card-sub" id="metric-sub-cache">Cached input tokens</span>
+            </div>
+          </div>
+
+          <!-- Daily Usage Trend -->
+          <div class="telemetry-section">
+            <h3 class="telemetry-section-title">Daily Token Consumption</h3>
+            <div class="telemetry-chart-container" id="telemetry-daily-chart">
+              <p style="color: var(--text-dim); text-align: center; padding: 20px;">Loading trend data...</p>
+            </div>
+          </div>
+
+          <!-- Breakdown: Workspace & Model side by side -->
+          <div class="telemetry-grid-two">
+            <div class="telemetry-section">
+              <h3 class="telemetry-section-title">By Workspace</h3>
+              <div class="table-responsive">
+                <table class="telemetry-table" id="telemetry-ws-table">
+                  <thead>
+                    <tr><th>Workspace</th><th>Requests</th><th>Tokens</th><th>Cost</th></tr>
+                  </thead>
+                  <tbody><tr><td colspan="4" style="text-align:center;color:var(--text-dim);">Loading...</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="telemetry-section">
+              <h3 class="telemetry-section-title">By Model</h3>
+              <div class="table-responsive">
+                <table class="telemetry-table" id="telemetry-model-table">
+                  <thead>
+                    <tr><th>Model</th><th>Requests</th><th>Tokens</th><th>Cost</th></tr>
+                  </thead>
+                  <tbody><tr><td colspan="4" style="text-align:center;color:var(--text-dim);">Loading...</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Recent Requests Log -->
+          <div class="telemetry-section">
+            <h3 class="telemetry-section-title">Recent Requests</h3>
+            <div class="table-responsive">
+              <table class="telemetry-table" id="telemetry-recent-table">
+                <thead>
+                  <tr><th>Time</th><th>Workspace</th><th>Model</th><th>Tokens (In/Out)</th><th>Cost</th><th>Latency</th></tr>
+                </thead>
+                <tbody><tr><td colspan="6" style="text-align:center;color:var(--text-dim);">Loading...</td></tr></tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </div>
     </div>

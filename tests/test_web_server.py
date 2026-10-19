@@ -210,3 +210,96 @@ async def test_web_server_workspace_discovery(tmp_path: Path):
         await client.close()
         server.shutdown()
 
+
+@pytest.mark.asyncio
+async def test_web_server_telemetry_endpoints(tmp_path: Path):
+    storage_dir = tmp_path / "chat"
+    storage = Storage(storage_dir)
+    storage.open()
+    storage.append_message("user", "Hello telemetry")
+    storage.close()
+
+    server = OptChatWebServer(
+        chat_dir=storage_dir,
+        provider_name="mock",
+    )
+    await server.init_engine()
+
+    # Pre-populate telemetry entries
+    server.telemetry.record_turn(
+        req_id="req_test_1",
+        conversation_id="conv_1",
+        workspace="jacquard",
+        model="gemini-4-argon-medium",
+        input_tokens=1000,
+        output_tokens=200,
+        cache_read_tokens=500,
+        duration_ms=1200,
+        role="assistant",
+        source="turn_agent",
+    )
+    server.telemetry.record_turn(
+        req_id="req_test_2",
+        conversation_id="conv_2",
+        workspace="opt-chat",
+        model="gemini-4-argon-high",
+        input_tokens=2000,
+        output_tokens=400,
+        cache_read_tokens=0,
+        duration_ms=2500,
+        role="assistant",
+        source="turn_agent",
+    )
+
+    client = TestClient(TestServer(server.app))
+    await client.start_server()
+
+    try:
+        # 1. Test GET /api/telemetry default
+        res = await client.get("/api/telemetry")
+        assert res.status == 200
+        data = await res.json()
+        assert data["status"] == "ok"
+        assert data["summary"]["total_requests"] == 2
+        assert data["summary"]["total_input_tokens"] == 3000
+        assert data["summary"]["total_output_tokens"] == 600
+        assert data["summary"]["total_tokens"] == 3600
+        assert data["summary"]["total_cost_usd"] > 0
+        assert len(data["by_workspace"]) == 2
+        assert len(data["by_model"]) == 2
+        assert len(data["recent"]) == 2
+
+        # 2. Test GET /api/telemetry with workspace filter
+        res_ws = await client.get("/api/telemetry?workspace=jacquard")
+        assert res_ws.status == 200
+        data_ws = await res_ws.json()
+        assert data_ws["summary"]["total_requests"] == 1
+        assert data_ws["summary"]["total_tokens"] == 1200
+        assert data_ws["summary"]["total_input_tokens"] == 1000
+
+        # 3. Test GET /api/telemetry with model filter
+        res_m = await client.get("/api/telemetry?model=gemini-4-argon-high")
+        assert res_m.status == 200
+        data_m = await res_m.json()
+        assert data_m["summary"]["total_requests"] == 1
+        assert data_m["summary"]["total_tokens"] == 2400
+
+        # 4. Test GET /api/telemetry/request/{req_id} found
+        res_req = await client.get("/api/telemetry/request/req_test_1")
+        assert res_req.status == 200
+        data_req = await res_req.json()
+        assert data_req["status"] == "ok"
+        assert data_req["request"]["req_id"] == "req_test_1"
+        assert data_req["request"]["workspace"] == "jacquard"
+        assert data_req["request"]["total_tokens"] == 1200
+
+        # 5. Test GET /api/telemetry/request/{req_id} not found
+        res_nf = await client.get("/api/telemetry/request/non_existent_req")
+        assert res_nf.status == 404
+        data_nf = await res_nf.json()
+        assert data_nf["status"] == "not_found"
+    finally:
+        await client.close()
+        server.shutdown()
+
+

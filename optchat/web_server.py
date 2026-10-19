@@ -192,6 +192,8 @@ class OptChatWebServer:
         self.app.router.add_post("/api/zoom", self.handle_api_zoom)
         self.app.router.add_post("/api/voice", self.handle_api_voice)
         self.app.router.add_get("/api/file", self.handle_api_file)
+        self.app.router.add_get("/api/telemetry", self.handle_api_telemetry)
+        self.app.router.add_get("/api/telemetry/request/{req_id}", self.handle_api_telemetry_request)
         self.app.router.add_get("/mcp", self.handle_mcp_get)
         self.app.router.add_post("/mcp", self.handle_mcp_post)
 
@@ -481,6 +483,39 @@ class OptChatWebServer:
 </body>
 </html>"""
         return web.Response(text=file_html, content_type="text/html")
+
+    async def handle_api_telemetry(self, request: web.Request) -> web.Response:
+        """Return token telemetry summary, daily trends, breakdowns, and recent requests."""
+        days_str = request.query.get("days")
+        days = int(days_str) if days_str and days_str.isdigit() else None
+        workspace = request.query.get("workspace")
+        model = request.query.get("model")
+
+        summary = self.telemetry.get_summary(days=days, workspace=workspace, model=model)
+        daily = self.telemetry.get_daily_usage(days=days or 30, workspace=workspace, model=model)
+        by_ws = self.telemetry.get_workspace_breakdown(days=days)
+        by_model = self.telemetry.get_model_breakdown(days=days)
+        recent = self.telemetry.get_recent_requests(limit=50, workspace=workspace, model=model)
+
+        return web.json_response({
+            "status": "ok",
+            "days": days,
+            "workspace": workspace,
+            "model": model,
+            "summary": summary,
+            "daily": daily,
+            "by_workspace": by_ws,
+            "by_model": by_model,
+            "recent": recent,
+        })
+
+    async def handle_api_telemetry_request(self, request: web.Request) -> web.Response:
+        """Lookup single request telemetry by correlation ID."""
+        req_id = request.match_info.get("req_id", "")
+        item = self.telemetry.get_request_by_id(req_id)
+        if not item:
+            return web.json_response({"status": "not_found", "error": f"Request {req_id} not found"}, status=404)
+        return web.json_response({"status": "ok", "request": item})
 
     async def handle_api_session_get(self, request: web.Request) -> web.Response:
         return web.json_response({
