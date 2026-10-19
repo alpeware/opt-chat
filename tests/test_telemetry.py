@@ -114,3 +114,69 @@ def test_telemetry_store_lifecycle(tmp_path: Path):
 
     req_none = store.get_request_by_id("non-existent")
     assert req_none is None
+
+
+def test_compactor_and_subagent_telemetry(tmp_path: Path):
+    from optchat.daemon import extract_cumulative_tokens_from_transcript
+    import json
+
+    store = TelemetryStore(chat_dir=tmp_path)
+
+    # 1. Compactor turn tracking
+    comp_row = store.record_turn(
+        workspace="internal",
+        model="gemini-3.8-flash-low",
+        input_tokens=420,
+        output_tokens=65,
+        cache_read_tokens=100,
+        source="compactor",
+        role="compactor",
+        provider="agy",
+        duration_ms=300,
+        status="ok",
+    )
+    assert comp_row > 0
+
+    # 2. Subagent turn tracking
+    sub_row = store.record_turn(
+        workspace="opt-chat",
+        model="gemini-4-argon-medium",
+        input_tokens=1500,
+        output_tokens=300,
+        cache_read_tokens=500,
+        conversation_id="subagent-conv-123",
+        source="subagent",
+        role="coder",
+        provider="agy",
+        duration_ms=800,
+        status="ok",
+    )
+    assert sub_row > comp_row
+
+    # 3. Test extract_cumulative_tokens_from_transcript helper
+    transcript_file = tmp_path / "transcript.jsonl"
+    lines = [
+        json.dumps({"type": "USER_INPUT", "content": "hello"}),
+        json.dumps({"type": "PLANNER_RESPONSE", "input_tokens": 100, "output_tokens": 20, "cache_read_tokens": 50}),
+        json.dumps({"type": "TOOL_CALL", "content": "run_command"}),
+        json.dumps({"type": "PLANNER_RESPONSE", "input_tokens": 200, "output_tokens": 40, "cache_read_tokens": 100}),
+    ]
+    transcript_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    tokens = extract_cumulative_tokens_from_transcript(str(transcript_file))
+    assert tokens["input_tokens"] == 300
+    assert tokens["output_tokens"] == 60
+    assert tokens["cache_read_tokens"] == 150
+
+    # 4. Check summary reflects compactor and subagent
+    summary = store.get_summary()
+    assert summary["total_requests"] == 2
+    assert summary["total_input_tokens"] == 1920
+    assert summary["total_output_tokens"] == 365
+    assert summary["total_tokens"] == 2285
+
+    # 5. Check recent requests
+    recent = store.get_recent_requests(limit=5)
+    assert len(recent) == 2
+    assert recent[0]["source"] == "subagent"
+    assert recent[1]["source"] == "compactor"

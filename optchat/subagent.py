@@ -52,6 +52,7 @@ class SubagentManager:
         agents_md_path: Optional[Path] = None,
         on_report: Optional[Callable[[str], None]] = None,
         ui_callback: Optional[Callable[[str, str], None]] = None,
+        telemetry: Optional[Any] = None,
     ):
         self.storage = storage
         self.view = view
@@ -60,6 +61,7 @@ class SubagentManager:
         self.agents_md_path = agents_md_path
         self.on_report = on_report
         self.ui_callback = ui_callback
+        self.telemetry = telemetry
 
         self._counter = 0
         self.active_tasks: Dict[str, SubagentTask] = {}
@@ -153,6 +155,22 @@ class SubagentManager:
                 task.status = "failed"
                 task.report = f"Subagent error during model turn: {err}"
                 return task.report
+
+            if getattr(self, "telemetry", None):
+                try:
+                    self.telemetry.record_turn(
+                        workspace="desk",
+                        model=getattr(self.provider, "model", None) or "default",
+                        input_tokens=response.prompt_tokens,
+                        output_tokens=response.completion_tokens,
+                        cache_read_tokens=response.cached_tokens,
+                        source="subagent",
+                        role=task.id,
+                        provider=getattr(self.provider, "name", "agy"),
+                        status="ok",
+                    )
+                except Exception as e:
+                    logger.debug("Failed recording subagent telemetry: %s", e)
 
             if response.tool_calls:
                 assistant_blocks: List[Dict[str, Any]] = []

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 import logging
+import time
 from typing import Deque, Dict, List, Optional, Set, Tuple
 
 from optchat.constants import (
@@ -41,12 +42,16 @@ class Compactor:
         provider: BaseLLMProvider,
         concurrency: int = JOBS,
         retry_delay: float = RETRY,
+        telemetry: Optional[Any] = None,
     ):
         self.storage = storage
         self.view = view
         self.provider = provider
         self.concurrency = concurrency
         self.retry_delay = retry_delay
+        self.telemetry = telemetry
+        if self.telemetry and not getattr(self.provider, "telemetry", None):
+            self.provider.telemetry = self.telemetry
 
         self.busy: Set[Tuple[int, int]] = set()
         self.failed_reported: Set[Tuple[int, int]] = set()
@@ -229,13 +234,34 @@ class Compactor:
 
             tries: List[str] = []
             while len(tries) < TRIES:
+                t0_step = time.monotonic()
                 reply = await self.provider.compact_step(
                     system=UNIFIED_PROMPT,
                     messages=conversation,
                 )
+                duration_step_ms = int((time.monotonic() - t0_step) * 1000)
                 line = reply.strip()
                 if not line:
                     raise RuntimeError("Empty response received from compactor model")
+
+                if self.telemetry and not getattr(self.provider, "_recorded_last_compact", False):
+                    est_in = sum(len(str(m.get("content", ""))) for m in conversation) // 4
+                    est_out = len(line) // 4
+                    try:
+                        self.telemetry.record_turn(
+                            workspace="internal",
+                            model=getattr(self.provider, "compact_model", None) or getattr(self.provider, "model", None) or "compactor",
+                            input_tokens=est_in,
+                            output_tokens=est_out,
+                            cache_read_tokens=0,
+                            source="compactor",
+                            role="compactor",
+                            provider=getattr(self.provider, "name", "agy"),
+                            duration_ms=duration_step_ms,
+                            status="ok",
+                        )
+                    except Exception as e:
+                        logger.debug("Failed recording compactor telemetry in Compactor: %s", e)
 
                 tries.append(line)
                 byte_len = len(line.encode("utf-8"))

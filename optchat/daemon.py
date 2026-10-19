@@ -208,6 +208,30 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
     return None
 
 
+def extract_cumulative_tokens_from_transcript(transcript_path: str) -> Dict[str, int]:
+    """Sum all input, output, and cache_read tokens across all PLANNER_RESPONSE steps."""
+    res = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
+    if not transcript_path or not os.path.isfile(transcript_path):
+        return res
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    data = json.loads(stripped)
+                    if data.get("type") == "PLANNER_RESPONSE":
+                        res["input_tokens"] += data.get("input_tokens", 0)
+                        res["output_tokens"] += data.get("output_tokens", 0)
+                        res["cache_read_tokens"] += data.get("cache_read_tokens", 0)
+                except Exception:
+                    continue
+    except Exception as e:
+        logger.debug("Failed reading subagent transcript %s: %s", transcript_path, e)
+    return res
+
+
 def extract_workspace_from_transcript(transcript_path: str) -> Optional[str]:
     """Inspect transcript.jsonl tool calls to detect workspace directory."""
     if not transcript_path or not os.path.isfile(transcript_path):
@@ -1070,10 +1094,48 @@ class OptChatDaemon:
             if parent_id or (conv_id in self._active_subagents):
                 sub_info = self._active_subagents.pop(conv_id, {})
                 sub_role = sub_info.get("role") or agent_name or "Subagent"
+
+                # Check if report needs to be extracted from transcript (e.g. if send_message was not used)
+                tpath = payload.get("transcriptPath")
+                if not tpath or not os.path.isfile(tpath):
+                    if conv_id and conv_id != "unknown":
+                        cand = Path.home() / ".gemini" / "antigravity-cli" / "brain" / conv_id / ".system_generated" / "logs" / "transcript.jsonl"
+                        if cand.is_file():
+                            tpath = str(cand)
+
+                sub_tokens = extract_cumulative_tokens_from_transcript(tpath) if tpath else {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
+                sub_ws = self._resolve_workspace_name(payload, tpath)
+
+                if getattr(self, "telemetry", None):
+                    try:
+                        self.telemetry.record_turn(
+                            workspace=sub_ws,
+                            model=payload.get("model") or get_agy_default_model(),
+                            input_tokens=sub_tokens["input_tokens"],
+                            output_tokens=sub_tokens["output_tokens"],
+                            cache_read_tokens=sub_tokens["cache_read_tokens"],
+                            conversation_id=conv_id,
+                            source="subagent",
+                            role=sub_role,
+                            provider="agy",
+                            status="ok",
+                        )
+                    except Exception as te:
+                        logger.error("Failed recording subagent telemetry: %s", te)
+
+                extra_data: Dict[str, Any] = {"role": sub_role, "conversationId": conv_id}
+                if sub_tokens["input_tokens"] > 0 or sub_tokens["output_tokens"] > 0:
+                    extra_data["tokens"] = {
+                        "input": sub_tokens["input_tokens"],
+                        "output": sub_tokens["output_tokens"],
+                        "cache_read": sub_tokens["cache_read_tokens"],
+                        "total": sub_tokens["input_tokens"] + sub_tokens["output_tokens"],
+                    }
+
                 self.broadcast(
                     "subagent_complete",
                     f"Subagent [{sub_role}] completed.",
-                    extra={"role": sub_role, "conversationId": conv_id},
+                    extra=extra_data,
                 )
 
                 # Check if report needs to be extracted from transcript (e.g. if send_message was not used)

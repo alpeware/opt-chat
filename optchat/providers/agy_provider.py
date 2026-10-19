@@ -348,6 +348,7 @@ class AgyProvider(BaseLLMProvider):
 
         res_text = ""
         cid: Optional[str] = None
+        data: Dict[str, Any] = {}
         try:
             data = json.loads(out_text)
             res_text = data.get("response", "").strip()
@@ -364,6 +365,50 @@ class AgyProvider(BaseLLMProvider):
                     pass
             if not res_text:
                 res_text = out_text
+
+        # Extract tokens for telemetry
+        usage = data.get("usage") or {}
+        in_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+        out_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+        cache_tokens = int(usage.get("cache_read_tokens") or usage.get("cached_tokens") or 0)
+
+        # Fallback to transcript if tokens are 0
+        if in_tokens == 0 and out_tokens == 0 and cid:
+            tpath = Path.home() / ".gemini" / "antigravity-cli" / "brain" / cid / ".system_generated" / "logs" / "transcript.jsonl"
+            if tpath.is_file():
+                try:
+                    with open(tpath, "r", encoding="utf-8", errors="replace") as f:
+                        for line in f:
+                            d = json.loads(line)
+                            if d.get("type") == "PLANNER_RESPONSE":
+                                in_tokens += d.get("input_tokens", 0)
+                                out_tokens += d.get("output_tokens", 0)
+                                cache_tokens += d.get("cache_read_tokens", 0)
+                except Exception:
+                    pass
+
+        # If still 0, estimate from prompt and response
+        if in_tokens == 0 and out_tokens == 0:
+            in_tokens = max(1, len(full_prompt) // 4)
+            out_tokens = max(1, len(res_text) // 4)
+
+        if getattr(self, "telemetry", None):
+            try:
+                self.telemetry.record_turn(
+                    workspace="internal",
+                    model=self.compact_model,
+                    input_tokens=in_tokens,
+                    output_tokens=out_tokens,
+                    cache_read_tokens=cache_tokens,
+                    conversation_id=cid,
+                    source="compactor",
+                    role="compactor",
+                    provider="agy",
+                    status="ok",
+                )
+                self._recorded_last_compact = True
+            except Exception as e:
+                logger.debug("Failed recording compactor telemetry: %s", e)
 
         # Clean up ephemeral compactor conversation from disk & summaries db
         if cid:
