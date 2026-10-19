@@ -56,6 +56,19 @@ async def test_web_server_endpoints(tmp_path: Path):
         state = await res.json()
         assert state["messages_count"] == 2
         assert state["view_budget"] > 0
+        assert "model" in state
+
+        # 2b. Test api/models and api/session model switching
+        res_models = await client.get("/api/models")
+        assert res_models.status == 200
+        models_data = await res_models.json()
+        assert len(models_data["models"]) >= 10
+        assert "current_model" in models_data
+
+        res_sess = await client.post("/api/session", json={"model": "gemini-4-argon-high"})
+        assert res_sess.status == 200
+        sess_data = await res_sess.json()
+        assert sess_data["model"] == "gemini-4-argon-high"
 
         # 3. Test api/history
         res = await client.get("/api/history")

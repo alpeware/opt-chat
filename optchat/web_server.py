@@ -49,7 +49,7 @@ class OptChatWebServer:
         provider_name: str = "agy",
         model: Optional[str] = None,
         compactor_model: Optional[str] = None,
-        timeout: float = 300.0,
+        timeout: float = 600.0,
         workspace: Optional[Path] = None,
         conversation_id: Optional[str] = None,
     ):
@@ -179,6 +179,7 @@ class OptChatWebServer:
         self.app.router.add_get("/api/state", self.handle_api_state)
         self.app.router.add_get("/api/session", self.handle_api_session_get)
         self.app.router.add_post("/api/session", self.handle_api_session_post)
+        self.app.router.add_get("/api/models", self.handle_api_models)
         self.app.router.add_get("/api/history", self.handle_api_history)
         self.app.router.add_get("/api/view", self.handle_api_view)
         self.app.router.add_get("/api/stream", self.handle_api_stream)
@@ -510,10 +511,37 @@ class OptChatWebServer:
                 self.main_provider.conversation_id = self.conversation_id
                 self.main_provider.last_conversation_id = self.conversation_id
 
+        if "model" in data and data["model"]:
+            self.model = data["model"].strip()
+            if self.main_provider:
+                self.main_provider.model = self.model
+
         return web.json_response({
             "status": "ok",
             "workspace": str(self.workspace),
             "conversation_id": self.conversation_id,
+            "model": self.model,
+        })
+
+    async def handle_api_models(self, request: web.Request) -> web.Response:
+        models = [
+            {"id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)", "provider": "google"},
+            {"id": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)", "provider": "google"},
+            {"id": "gemini-3.8-flash-low", "name": "Gemini 3.8 Flash (Low)", "provider": "google"},
+            {"id": "gemini-4-argon-high", "name": "Gemini 4 Argon (High)", "provider": "google"},
+            {"id": "gemini-4-argon-medium", "name": "Gemini 4 Argon (Medium)", "provider": "google"},
+            {"id": "gemini-4-argon-low", "name": "Gemini 4 Argon (Low)", "provider": "google"},
+            {"id": "claude-sonnet-5-5-high", "name": "Claude Sonnet 5.5 (High)", "provider": "anthropic"},
+            {"id": "claude-sonnet-5-5-medium", "name": "Claude Sonnet 5.5 (Medium)", "provider": "anthropic"},
+            {"id": "claude-sonnet-5-5-low", "name": "Claude Sonnet 5.5 (Low)", "provider": "anthropic"},
+            {"id": "claude-opus-5-5-high", "name": "Claude Opus 5.5 (High)", "provider": "anthropic"},
+            {"id": "claude-opus-5-5-medium", "name": "Claude Opus 5.5 (Medium)", "provider": "anthropic"},
+            {"id": "claude-opus-5-5-low", "name": "Claude Opus 5.5 (Low)", "provider": "anthropic"},
+            {"id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)", "provider": "openai"},
+        ]
+        return web.json_response({
+            "models": models,
+            "current_model": self.model or "gemini-3.8-flash-high",
         })
 
     async def handle_api_state(self, request: web.Request) -> web.Response:
@@ -528,6 +556,7 @@ class OptChatWebServer:
                 "daemon_connected": True,
                 "workspace": str(self.workspace),
                 "conversation_id": self.conversation_id,
+                "model": self.model or "gemini-3.8-flash-high",
                 "workspaces": st.get("workspaces", []),
             })
 
@@ -561,6 +590,7 @@ class OptChatWebServer:
             "daemon_connected": False,
             "workspace": str(self.workspace),
             "conversation_id": self.conversation_id,
+            "model": self.model or "gemini-3.8-flash-high",
             "workspaces": sorted(list(known_workspaces)),
         })
 
@@ -689,11 +719,22 @@ class OptChatWebServer:
         logger.warning("Could not resolve workspace path for '%s'; falling back to %s", ws_name, self.workspace)
         return self.workspace
 
-    async def run_workspace_agy_turn(self, ws_dir: Path, ws_name: str, message: str) -> None:
+    async def run_workspace_agy_turn(
+        self,
+        ws_dir: Path,
+        ws_name: str,
+        message: str,
+        req_id: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> None:
         """Execute a turn directly in a specific workspace using agy -c simulating CLI behavior."""
-        logger.info("Executing agy -c in workspace '%s' (%s)", ws_name, ws_dir)
+        logger.info("Executing agy -c in workspace '%s' (%s) [req_id=%s, model=%s]", ws_name, ws_dir, req_id, model)
 
-        self.broadcast_stream_event("settling", f"Connecting to {ws_name} session...")
+        extra_info: Dict[str, Any] = {"workspace": ws_name}
+        if req_id:
+            extra_info["req_id"] = req_id
+
+        self.broadcast_stream_event("settling", f"Connecting to {ws_name} session...", extra=extra_info)
 
         agy_bin = shutil.which("agy") or "/home/simonpure/.local/bin/agy"
         cmd = [
@@ -704,6 +745,9 @@ class OptChatWebServer:
             "--output-format",
             "stream-json",
         ]
+        selected_model = model or self.model
+        if selected_model:
+            cmd.extend(["--model", selected_model])
 
         env = {**os.environ}
 
@@ -747,7 +791,7 @@ class OptChatWebServer:
                             delta = su.get("text_delta")
                             if delta:
                                 full_response_chunks.append(delta)
-                                self.broadcast_stream_event("text", delta)
+                                self.broadcast_stream_event("text", delta, extra=extra_info)
                         elif event_type == "result":
                             res = event_data.get("result", {})
                             final_response_text = res.get("response", "")
@@ -767,14 +811,27 @@ class OptChatWebServer:
             )
             await proc.wait()
 
+        except asyncio.TimeoutError:
+            logger.error("Turn in workspace '%s' timed out after %ss [req_id=%s]", ws_name, self.timeout, req_id)
+            if 'proc' in locals() and proc.returncode is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self.broadcast_stream_event("error", f"Request in {ws_name} timed out after {int(self.timeout)}s", extra=extra_info)
         except Exception as e:
             logger.error("Error executing agy turn in workspace '%s': %s", ws_name, e)
-            self.broadcast_stream_event("text", f"\n[Error executing in {ws_name}: {e}]")
+            if 'proc' in locals() and proc.returncode is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self.broadcast_stream_event("error", f"Error in {ws_name}: {e}", extra=extra_info)
 
         reply = final_response_text.strip() or "".join(full_response_chunks).strip()
         if reply:
-            self.broadcast_stream_event("log_talk", reply, extra={"workspace": ws_name})
-        self.broadcast_stream_event("turn_complete", "Turn finished.")
+            self.broadcast_stream_event("log_talk", reply, extra=extra_info)
+        self.broadcast_stream_event("turn_complete", "Turn finished.", extra=extra_info)
 
     async def handle_api_chat(self, request: web.Request) -> web.Response:
         try:
@@ -787,6 +844,10 @@ class OptChatWebServer:
             return web.json_response({"error": "Message cannot be empty"}, status=400)
 
         ws_req = (data.get("workspace") or "all").strip().lower()
+        req_id = data.get("req_id")
+        req_model = data.get("model")
+        if req_model:
+            self.model = req_model
 
         accept = request.headers.get("Accept", "")
         if "text/event-stream" in accept:
@@ -806,10 +867,14 @@ class OptChatWebServer:
 
             if ws_req in ("all", "desk"):
                 assert self.agent is not None
+                if req_model and self.main_provider:
+                    self.main_provider.model = req_model
                 turn_task = asyncio.create_task(self.agent.submit_user_message(message))
             else:
                 ws_dir = self.resolve_workspace_dir(ws_req)
-                turn_task = asyncio.create_task(self.run_workspace_agy_turn(ws_dir, ws_req, message))
+                turn_task = asyncio.create_task(
+                    self.run_workspace_agy_turn(ws_dir, ws_req, message, req_id=req_id, model=req_model or self.model)
+                )
 
             try:
                 while not turn_task.done() or not queue.empty():
@@ -830,12 +895,22 @@ class OptChatWebServer:
         # Asynchronous submission: queue task immediately and return status
         if ws_req in ("all", "desk"):
             assert self.agent is not None
+            if req_model and self.main_provider:
+                self.main_provider.model = req_model
             asyncio.create_task(self.agent.submit_user_message(message))
         else:
             ws_dir = self.resolve_workspace_dir(ws_req)
-            asyncio.create_task(self.run_workspace_agy_turn(ws_dir, ws_req, message))
+            asyncio.create_task(
+                self.run_workspace_agy_turn(ws_dir, ws_req, message, req_id=req_id, model=req_model or self.model)
+            )
 
-        return web.json_response({"status": "queued", "message": message, "workspace": ws_req})
+        return web.json_response({
+            "status": "queued",
+            "message": message,
+            "workspace": ws_req,
+            "req_id": req_id,
+            "model": req_model or self.model,
+        })
 
     async def handle_api_command(self, request: web.Request) -> web.Response:
         try:

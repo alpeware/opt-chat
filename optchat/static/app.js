@@ -2,10 +2,19 @@ let selectedLine = null;
 let currentAssistantBubble = null;
 let currentStreamedText = '';
 const pendingAssistantBubbles = [];
+const inFlightRequests = new Map();
 let currentWorkspace = '';
-let selectedWorkspace = 'all';
 let selectedCategory = 'all';
 let availableWorkspaces = [];
+
+function getWorkspaceFromHash() {
+  if (!window.location.hash) return 'all';
+  const clean = decodeURIComponent(window.location.hash.replace(/^#/, '')).trim().toLowerCase();
+  return (clean && clean !== 'all') ? clean : 'all';
+}
+
+let selectedWorkspace = getWorkspaceFromHash();
+let selectedModel = localStorage.getItem('optchat_model') || 'gemini-3.8-flash-high';
 
 function setAppHeight() {
   const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
@@ -17,10 +26,18 @@ function setAppHeight() {
 // Lifecycle and Event Listeners
 window.addEventListener('DOMContentLoaded', () => {
   setAppHeight();
+  fetchModels();
   fetchState();
   fetchHistory();
   connectEventStream();
   setInterval(fetchState, 5000);
+
+  window.addEventListener('hashchange', () => {
+    const ws = getWorkspaceFromHash();
+    if (ws !== selectedWorkspace) {
+      setWorkspaceFilter(ws, false);
+    }
+  });
 
   const input = document.getElementById('prompt-input');
   if (input) {
@@ -54,7 +71,44 @@ if (window.visualViewport) {
 window.addEventListener('resize', setAppHeight);
 window.addEventListener('orientationchange', () => setTimeout(setAppHeight, 200));
 
+// Model Management
+async function fetchModels() {
+  try {
+    const res = await fetch('/api/models');
+    if (!res.ok) return;
+    const data = await res.json();
+    const sel = document.getElementById('model-select-dropdown');
+    if (!sel) return;
+    if (Array.isArray(data.models) && data.models.length > 0) {
+      sel.innerHTML = data.models.map(m =>
+        `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name || m.id)}</option>`
+      ).join('');
+    }
+    const saved = localStorage.getItem('optchat_model');
+    if (saved) {
+      selectedModel = saved;
+    } else if (data.current_model) {
+      selectedModel = data.current_model;
+    }
+    sel.value = selectedModel;
+  } catch (e) {
+    console.warn('Failed to fetch models:', e);
+  }
+}
 
+async function setModel(model) {
+  selectedModel = model || 'gemini-3.8-flash-high';
+  localStorage.setItem('optchat_model', selectedModel);
+  const sel = document.getElementById('model-select-dropdown');
+  if (sel && sel.value !== selectedModel) sel.value = selectedModel;
+  try {
+    await fetch('/api/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: selectedModel })
+    });
+  } catch (e) {}
+}
 
 // Persistent SSE Event Stream
 function connectEventStream() {
@@ -92,8 +146,38 @@ function isMatchingMessageText(a, b) {
   return false;
 }
 
+function findInFlightRequest(event) {
+  const reqId = (event.extra && event.extra.req_id) || event.req_id;
+  if (reqId && inFlightRequests.has(reqId)) {
+    return inFlightRequests.get(reqId);
+  }
+  const ws = (event.extra && event.extra.workspace) || event.workspace;
+  if (ws) {
+    for (const req of inFlightRequests.values()) {
+      if (req.workspace.toLowerCase() === ws.toLowerCase()) {
+        return req;
+      }
+    }
+  }
+  if (inFlightRequests.size === 1) {
+    return inFlightRequests.values().next().value;
+  }
+  return null;
+}
+
 function handleStreamEvent(event) {
   if (event.type === 'token' || event.type === 'text') {
+    const req = findInFlightRequest(event);
+    if (req) {
+      req.streamedText += event.content;
+      if (req.bubble && document.body.contains(req.bubble)) {
+        req.bubble.innerHTML = formatMarkdown(req.streamedText) + '<span class="cursor-stream"></span>';
+        const row = req.bubble.closest('.message-row');
+        if (row) row.setAttribute('data-raw-text', req.streamedText.trim());
+        scrollToBottom();
+      }
+      return;
+    }
     if (!currentAssistantBubble) {
       currentAssistantBubble = pendingAssistantBubbles.shift() || appendMessage('talk', '', new Date().toISOString(), true);
       currentStreamedText = '';
@@ -107,6 +191,22 @@ function handleStreamEvent(event) {
     scrollToBottom();
   } else if (event.type === 'log_talk') {
     const talkText = (event.content || '').trim();
+    const req = findInFlightRequest(event);
+    if (req) {
+      const finalText = talkText || req.streamedText;
+      if (req.bubble && document.body.contains(req.bubble)) {
+        req.bubble.innerHTML = renderBubbleContent('talk', finalText);
+        const row = req.bubble.closest('.message-row');
+        if (row) {
+          row.setAttribute('data-raw-text', finalText.trim());
+          enrichMessageRow(row, 'talk', req.workspace, null, new Date().toISOString());
+        }
+      }
+      inFlightRequests.delete(req.reqId);
+      scrollToBottom();
+      fetchState();
+      return;
+    }
     // Check if an existing row in chat-stream already matches this text
     const stream = document.getElementById('chat-stream');
     if (stream) {
@@ -152,9 +252,17 @@ function handleStreamEvent(event) {
     scrollToBottom();
     fetchState();
   } else if (event.type === 'settling' || event.type === 'settling_timeout') {
+    const req = findInFlightRequest(event);
+    if (req) {
+      req.status = event.content;
+      if (req.bubble && document.body.contains(req.bubble) && !req.streamedText) {
+        req.bubble.innerHTML = `<span style="color: var(--text-dim); font-style: italic;">⏳ ${escapeHtml(event.content)}</span>`;
+      }
+      return;
+    }
     const target = currentAssistantBubble || (pendingAssistantBubbles.length > 0 ? pendingAssistantBubbles[0] : null);
     if (target && !currentStreamedText) {
-      target.innerHTML = `<span style="color: var(--text-dim); font-style: italic;">⏳ ${event.content}</span>`;
+      target.innerHTML = `<span style="color: var(--text-dim); font-style: italic;">⏳ ${escapeHtml(event.content)}</span>`;
     }
   } else if (event.type === 'tool_call' || event.type === 'log_tool') {
     const toolEl = document.createElement('details');
@@ -207,6 +315,14 @@ function handleStreamEvent(event) {
     scrollToBottom();
     fetchState();
   } else if (event.type === 'error') {
+    const req = findInFlightRequest(event);
+    if (req) {
+      if (req.bubble && document.body.contains(req.bubble)) {
+        req.bubble.innerHTML = `<span style="color: #ef4444;">Error: ${escapeHtml(event.content)}</span>`;
+      }
+      inFlightRequests.delete(req.reqId);
+      return;
+    }
     if (currentAssistantBubble) {
       currentAssistantBubble.innerHTML = `<span style="color: #ef4444;">Error: ${escapeHtml(event.content)}</span>`;
       currentAssistantBubble = null;
@@ -298,6 +414,17 @@ function handleStreamEvent(event) {
     }
     fetchState();
   } else if (event.type === 'turn_complete') {
+    const req = findInFlightRequest(event);
+    if (req) {
+      if (req.bubble && document.body.contains(req.bubble) && req.streamedText) {
+        req.bubble.innerHTML = renderBubbleContent('talk', req.streamedText);
+        const row = req.bubble.closest('.message-row');
+        if (row) row.setAttribute('data-raw-text', req.streamedText.trim());
+      }
+      inFlightRequests.delete(req.reqId);
+      fetchState();
+      return;
+    }
     if (currentAssistantBubble) {
       if (currentStreamedText) {
         currentAssistantBubble.innerHTML = renderBubbleContent('talk', currentStreamedText);
@@ -345,8 +472,21 @@ function renderWorkspacePills(workspaces) {
   }
 }
 
-function setWorkspaceFilter(ws) {
+function setWorkspaceFilter(ws, updateHash = true) {
   selectedWorkspace = (ws || 'all').toLowerCase();
+
+  if (updateHash) {
+    if (selectedWorkspace === 'all') {
+      if (window.location.hash) {
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
+    } else {
+      const targetHash = '#' + encodeURIComponent(selectedWorkspace);
+      if (window.location.hash !== targetHash) {
+        history.replaceState(null, '', targetHash);
+      }
+    }
+  }
 
   // Update workspace pills highlight
   document.querySelectorAll('#workspace-pills .filter-btn').forEach(btn => {
@@ -474,7 +614,14 @@ async function fetchHistory() {
     const stream = document.getElementById('chat-stream');
     if (Array.isArray(msgs)) {
       stream.innerHTML = '';
-      if (msgs.length === 0) {
+      let matchingInFlight = false;
+      inFlightRequests.forEach(req => {
+        if (!selectedWorkspace || selectedWorkspace === 'all' || req.workspace === 'all' || req.workspace.toLowerCase() === selectedWorkspace.toLowerCase()) {
+          matchingInFlight = true;
+        }
+      });
+
+      if (msgs.length === 0 && !matchingInFlight) {
         stream.innerHTML = `<div class="empty-stream-notice" style="text-align: center; padding: 40px 20px; color: var(--text-dim); font-size: 0.9rem;">No messages in workspace <b>${escapeHtml(selectedWorkspace)}</b>.</div>`;
         return;
       }
@@ -504,6 +651,40 @@ async function fetchHistory() {
           }
         }
       });
+
+      // Re-attach active in-flight requests that match the current workspace filter
+      inFlightRequests.forEach(req => {
+        const wsMatch = (!selectedWorkspace || selectedWorkspace === 'all' || req.workspace === 'all' || req.workspace.toLowerCase() === selectedWorkspace.toLowerCase());
+        if (wsMatch) {
+          const uBubble = appendMessage('user', req.userText, req.date, false, null, req.workspace !== 'all' ? req.workspace : null);
+          if (uBubble) {
+            const uRow = uBubble.closest('.message-row');
+            if (uRow) {
+              uRow.setAttribute('data-raw-text', req.userText.trim());
+              uRow.setAttribute('data-req-id', req.reqId);
+              uRow.setAttribute('data-workspace', req.workspace);
+            }
+          }
+          const aBubble = appendMessage('talk', '', req.date, true, null, req.workspace !== 'all' ? req.workspace : null);
+          if (aBubble) {
+            const aRow = aBubble.closest('.message-row');
+            if (aRow) {
+              aRow.setAttribute('data-req-id', req.reqId);
+              aRow.setAttribute('data-workspace', req.workspace);
+            }
+            req.bubble = aBubble;
+            if (req.streamedText) {
+              aBubble.innerHTML = formatMarkdown(req.streamedText) + '<span class="cursor-stream"></span>';
+              aRow.setAttribute('data-raw-text', req.streamedText.trim());
+            } else {
+              aBubble.innerHTML = `<span style="color: var(--text-dim); font-style: italic;">⏳ ${escapeHtml(req.status || 'Running turn...')}</span>`;
+            }
+          }
+        } else {
+          req.bubble = null;
+        }
+      });
+
       scrollToBottom();
     }
   } catch (e) {
@@ -1156,31 +1337,60 @@ async function sendMessage() {
     stopVoiceDictation();
   }
   const input = document.getElementById('prompt-input');
-  const text = input.value.trim();
+  const text = input ? input.value.trim() : '';
   if (!text) return;
 
-  input.value = '';
-  input.style.height = '46px';
-  input.focus();
-  setAppHeight();
-
-  // Show user message immediately in chat
-  const userBubble = appendMessage('user', text, new Date().toISOString());
-  if (userBubble) {
-    const uRow = userBubble.closest('.message-row');
-    if (uRow) uRow.setAttribute('data-raw-text', text.trim());
+  if (input) {
+    input.value = '';
+    input.style.height = '46px';
+    input.focus();
+    setAppHeight();
   }
-
-  // Create a pending assistant bubble that will receive stream events
-  const bubble = appendMessage('talk', '', new Date().toISOString(), true);
-  bubble.innerHTML = `<span style="color: var(--text-dim); font-style: italic;">⏳ Queued...</span>`;
-  pendingAssistantBubbles.push(bubble);
 
   // If slash command
   if (text.startsWith('/')) {
+    const bubble = appendMessage('talk', '', new Date().toISOString(), true);
     await handleSlashCommand(text, bubble);
     return;
   }
+
+  const reqId = 'req_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+  const targetWs = (selectedWorkspace || 'all').toLowerCase();
+  const nowIso = new Date().toISOString();
+
+  // Show user message immediately in chat
+  const userBubble = appendMessage('user', text, nowIso, false, null, targetWs !== 'all' ? targetWs : null);
+  if (userBubble) {
+    const uRow = userBubble.closest('.message-row');
+    if (uRow) {
+      uRow.setAttribute('data-raw-text', text.trim());
+      uRow.setAttribute('data-req-id', reqId);
+      uRow.setAttribute('data-workspace', targetWs);
+    }
+  }
+
+  // Create a pending assistant bubble that will receive stream events
+  const bubble = appendMessage('talk', '', nowIso, true, null, targetWs !== 'all' ? targetWs : null);
+  if (bubble) {
+    bubble.innerHTML = `<span style="color: var(--text-dim); font-style: italic;">⏳ Queued...</span>`;
+    const aRow = bubble.closest('.message-row');
+    if (aRow) {
+      aRow.setAttribute('data-req-id', reqId);
+      aRow.setAttribute('data-workspace', targetWs);
+    }
+  }
+
+  const reqObj = {
+    reqId,
+    workspace: targetWs,
+    model: selectedModel,
+    userText: text,
+    streamedText: '',
+    status: 'Queued...',
+    date: nowIso,
+    bubble: bubble
+  };
+  inFlightRequests.set(reqId, reqObj);
 
   try {
     const res = await fetch('/api/chat', {
@@ -1188,19 +1398,24 @@ async function sendMessage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: text,
-        workspace: selectedWorkspace || 'all'
+        workspace: targetWs,
+        req_id: reqId,
+        model: selectedModel
       })
     });
     if (!res.ok) {
       const err = await res.json();
-      bubble.innerHTML = `<span style="color: #ef4444;">Error: ${escapeHtml(err.error || 'Failed to submit')}</span>`;
-      const idx = pendingAssistantBubbles.indexOf(bubble);
-      if (idx !== -1) pendingAssistantBubbles.splice(idx, 1);
+      const errMsg = err.error || 'Failed to submit';
+      if (reqObj.bubble && document.body.contains(reqObj.bubble)) {
+        reqObj.bubble.innerHTML = `<span style="color: #ef4444;">Error: ${escapeHtml(errMsg)}</span>`;
+      }
+      inFlightRequests.delete(reqId);
     }
   } catch (err) {
-    bubble.innerHTML = `<span style="color: #ef4444;">Network error: ${escapeHtml(err.message)}</span>`;
-    const idx = pendingAssistantBubbles.indexOf(bubble);
-    if (idx !== -1) pendingAssistantBubbles.splice(idx, 1);
+    if (reqObj.bubble && document.body.contains(reqObj.bubble)) {
+      reqObj.bubble.innerHTML = `<span style="color: #ef4444;">Network error: ${escapeHtml(err.message)}</span>`;
+    }
+    inFlightRequests.delete(reqId);
   }
 }
 

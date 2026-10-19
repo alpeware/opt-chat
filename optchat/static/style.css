@@ -181,9 +181,26 @@ header {
   user-select: none;
 }
 
-.category-pills,
+.filter-row-workspace {
+  flex-wrap: wrap;
+  overflow-x: visible;
+  align-items: flex-start;
+  row-gap: 6px;
+}
+
+.filter-row-workspace .filter-group-label {
+  padding-top: 4px;
+}
+
+.category-pills {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
 .workspace-pills {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
 }
@@ -225,7 +242,8 @@ header {
   box-shadow: 0 0 8px rgba(56, 189, 248, 0.2);
 }
 
-.workspace-pill-select {
+.workspace-pill-select,
+.model-pill-select {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -235,7 +253,8 @@ header {
   border-radius: 12px;
 }
 
-.workspace-pill-select select {
+.workspace-pill-select select,
+.model-pill-select select {
   -webkit-appearance: none;
   -moz-appearance: none;
   appearance: none;
@@ -249,7 +268,8 @@ header {
   padding: 0 2px;
 }
 
-.workspace-pill-select select option {
+.workspace-pill-select select option,
+.model-pill-select select option {
   background: #131b2e;
   color: #f1f5f9;
 }

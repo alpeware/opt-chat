@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
   <title>OptChat Web</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-  <link rel="stylesheet" href="/static/style.css?v=20261012-01">
+  <link rel="stylesheet" href="/static/style.css?v=20261017-02">
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script src="/static/app.js?v=20261012-01" defer></script>
+  <script src="/static/app.js?v=20261017-02" defer></script>
 </head>
 <body>
   <div id="app">
@@ -48,6 +48,26 @@
         <div class="workspace-pill-select" id="workspace-pill-select" title="Workspace selector dropdown">
           <select id="ws-select-dropdown" onchange="setWorkspaceFilter(this.value)">
             <option value="all">All Workspaces</option>
+          </select>
+        </div>
+      </div>
+      <div class="filter-row filter-row-model">
+        <span class="filter-group-label">Model:</span>
+        <div class="model-pill-select" id="model-pill-select" title="Active LLM model">
+          <select id="model-select-dropdown" onchange="setModel(this.value)">
+            <option value="gemini-3.8-flash-high">Gemini 3.8 Flash (High)</option>
+            <option value="gemini-3.8-flash-medium">Gemini 3.8 Flash (Medium)</option>
+            <option value="gemini-3.8-flash-low">Gemini 3.8 Flash (Low)</option>
+            <option value="gemini-4-argon-high">Gemini 4 Argon (High)</option>
+            <option value="gemini-4-argon-medium">Gemini 4 Argon (Medium)</option>
+            <option value="gemini-4-argon-low">Gemini 4 Argon (Low)</option>
+            <option value="claude-sonnet-5-5-high">Claude Sonnet 5.5 (High)</option>
+            <option value="claude-sonnet-5-5-medium">Claude Sonnet 5.5 (Medium)</option>
+            <option value="claude-sonnet-5-5-low">Claude Sonnet 5.5 (Low)</option>
+            <option value="claude-opus-5-5-high">Claude Opus 5.5 (High)</option>
+            <option value="claude-opus-5-5-medium">Claude Opus 5.5 (Medium)</option>
+            <option value="claude-opus-5-5-low">Claude Opus 5.5 (Low)</option>
+            <option value="gpt-oss-120b-medium">GPT-OSS 120B (Medium)</option>
           </select>
         </div>
       </div>
