@@ -45,6 +45,7 @@ class TurnAgent:
         agents_md_path: Optional[Path] = None,
         git_auto_commit: bool = True,
         ui_callback: Optional[Callable[[str, str], None]] = None,
+        telemetry: Optional[Any] = None,
     ):
         self.storage = storage
         self.view = view
@@ -54,6 +55,7 @@ class TurnAgent:
         self.agents_md_path = agents_md_path
         self.git_auto_commit = git_auto_commit
         self.ui_callback = ui_callback
+        self.telemetry = telemetry
 
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.midrun_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -225,6 +227,22 @@ class TurnAgent:
                 self.view.on_new_message(talk_msg.i)
                 self.emit_ui("log_talk", err_msg)
                 break
+
+            if getattr(self, "telemetry", None):
+                try:
+                    self.telemetry.record_turn(
+                        workspace="desk",
+                        model=getattr(self.provider, "model", None) or "default",
+                        input_tokens=response.prompt_tokens,
+                        output_tokens=response.completion_tokens,
+                        cache_read_tokens=response.cached_tokens,
+                        source="agent",
+                        role="main",
+                        provider=getattr(self.provider, "name", "agy"),
+                        status="ok",
+                    )
+                except Exception as e:
+                    logger.debug("Failed recording agent telemetry: %s", e)
 
             # Note: thoughts (reasoning) are displayed to user above, NEVER logged (§2)
 

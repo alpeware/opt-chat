@@ -20,6 +20,7 @@ import re
 import shutil
 import socket
 import sys
+import time
 from typing import Any, Dict, List, Optional, Set
 
 from aiohttp import web
@@ -32,6 +33,7 @@ from optchat.providers import create_provider
 from optchat.providers.agy_provider import AgyProvider
 from optchat.providers.base import BaseLLMProvider
 from optchat.storage import Message, Storage, is_valid_workspace_name
+from optchat.telemetry import TelemetryStore, estimate_cost_usd
 from optchat.tools import ToolRegistry
 from optchat.tree import node_coords
 from optchat.view import LiveView
@@ -72,6 +74,7 @@ class OptChatWebServer:
         self.compactor: Optional[Any] = None
         self.agent: Optional[TurnAgent] = None
         self.main_provider: Optional[BaseLLMProvider] = None
+        self.telemetry = TelemetryStore(chat_dir=self.chat_dir)
 
         @web.middleware
         async def static_cache_control(request: web.Request, handler: Any) -> web.StreamResponse:
@@ -151,6 +154,7 @@ class OptChatWebServer:
             agents_md_path=agents_md if agents_md.exists() else None,
             git_auto_commit=False,
             ui_callback=ui_listener,
+            telemetry=self.telemetry,
         )
 
         self._setup_routes()
@@ -753,6 +757,10 @@ class OptChatWebServer:
 
         full_response_chunks: List[str] = []
         final_response_text = ""
+        usage_data: Dict[str, Any] = {}
+        t0 = time.monotonic()
+        is_error = False
+        is_timeout = False
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -774,7 +782,7 @@ class OptChatWebServer:
                     await proc.stdin.wait_closed()
 
             async def read_stdout():
-                nonlocal final_response_text
+                nonlocal final_response_text, usage_data
                 assert proc.stdout is not None
                 while True:
                     line = await proc.stdout.readline()
@@ -795,6 +803,9 @@ class OptChatWebServer:
                         elif event_type == "result":
                             res = event_data.get("result", {})
                             final_response_text = res.get("response", "")
+                            usage = res.get("usage") or event_data.get("usage") or {}
+                            if usage:
+                                usage_data = usage
                     except Exception:
                         pass
 
@@ -812,6 +823,8 @@ class OptChatWebServer:
             await proc.wait()
 
         except asyncio.TimeoutError:
+            is_error = True
+            is_timeout = True
             logger.error("Turn in workspace '%s' timed out after %ss [req_id=%s]", ws_name, self.timeout, req_id)
             if 'proc' in locals() and proc.returncode is None:
                 try:
@@ -820,6 +833,7 @@ class OptChatWebServer:
                     pass
             self.broadcast_stream_event("error", f"Request in {ws_name} timed out after {int(self.timeout)}s", extra=extra_info)
         except Exception as e:
+            is_error = True
             logger.error("Error executing agy turn in workspace '%s': %s", ws_name, e)
             if 'proc' in locals() and proc.returncode is None:
                 try:
@@ -828,9 +842,78 @@ class OptChatWebServer:
                     pass
             self.broadcast_stream_event("error", f"Error in {ws_name}: {e}", extra=extra_info)
 
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        in_tokens = int(usage_data.get("input_tokens") or usage_data.get("prompt_tokens") or 0)
+        out_tokens = int(usage_data.get("output_tokens") or usage_data.get("completion_tokens") or 0)
+        cache_tokens = int(usage_data.get("cache_read_tokens") or usage_data.get("cached_tokens") or 0)
+
+        # Fallback to transcript if 0 tokens captured
+        if in_tokens == 0 and out_tokens == 0:
+            cand_tpath = None
+            try:
+                brain_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+                if brain_dir.is_dir():
+                    subdirs = sorted(
+                        [d for d in brain_dir.iterdir() if d.is_dir()],
+                        key=lambda d: d.stat().st_mtime,
+                        reverse=True,
+                    )
+                    for d in subdirs[:3]:
+                        tp = d / ".system_generated" / "logs" / "transcript.jsonl"
+                        if tp.is_file():
+                            cand_tpath = tp
+                            break
+            except Exception:
+                pass
+            if cand_tpath:
+                try:
+                    with open(cand_tpath, "r", encoding="utf-8", errors="replace") as f:
+                        for line in reversed(f.readlines()[-30:]):
+                            try:
+                                d = json.loads(line)
+                                if d.get("type") == "PLANNER_RESPONSE":
+                                    in_tokens += d.get("input_tokens", 0)
+                                    out_tokens += d.get("output_tokens", 0)
+                                    cache_tokens += d.get("cache_read_tokens", 0)
+                                    if d.get("content"):
+                                        break
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+
+        turn_status = "timeout" if is_timeout else ("error" if is_error else "ok")
+        if getattr(self, "telemetry", None):
+            try:
+                self.telemetry.record_turn(
+                    workspace=ws_name,
+                    model=selected_model or "default",
+                    input_tokens=in_tokens,
+                    output_tokens=out_tokens,
+                    cache_read_tokens=cache_tokens,
+                    req_id=req_id,
+                    source="web",
+                    role="main",
+                    provider="agy",
+                    duration_ms=duration_ms,
+                    status=turn_status,
+                )
+            except Exception as e:
+                logger.error("Failed recording web turn telemetry: %s", e)
+
         reply = final_response_text.strip() or "".join(full_response_chunks).strip()
         if reply:
             self.broadcast_stream_event("log_talk", reply, extra=extra_info)
+
+        if in_tokens > 0 or out_tokens > 0:
+            extra_info["tokens"] = {
+                "input": in_tokens,
+                "output": out_tokens,
+                "cache_read": cache_tokens,
+                "total": in_tokens + out_tokens,
+                "cost_usd": estimate_cost_usd(selected_model or "default", in_tokens, out_tokens, cache_tokens),
+            }
+
         self.broadcast_stream_event("turn_complete", "Turn finished.", extra=extra_info)
 
     async def handle_api_chat(self, request: web.Request) -> web.Response:

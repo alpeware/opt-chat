@@ -21,6 +21,7 @@ from optchat.compactor import Compactor
 from optchat.constants import VIEW
 from optchat.providers import create_provider
 from optchat.storage import Message, Storage, is_valid_workspace_name
+from optchat.telemetry import TelemetryStore
 from optchat.tree import node_coords
 from optchat.view import LiveView
 from optchat.visualizer import export_html_to_file
@@ -97,6 +98,20 @@ def parse_system_message_prompt(raw: str) -> str:
     return first_line[:150]
 
 
+def get_agy_default_model() -> str:
+    """Retrieve active model configured in Antigravity settings or default."""
+    try:
+        settings_path = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+        if settings_path.is_file():
+            with open(settings_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                if cfg.get("model"):
+                    return str(cfg.get("model"))
+    except Exception:
+        pass
+    return "Gemini 4 Argon (Medium)"
+
+
 def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[str, Any]]:
     """Scan transcript.jsonl backwards to find the most recent completed turn (prompt + reply)."""
     from optchat.importer import extract_user_text
@@ -109,6 +124,9 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
     last_reply_idx = None
     last_user = None
     system_messages = []
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_cache_tokens = 0
 
     try:
         with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
@@ -131,10 +149,17 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
                 if content and content.strip():
                     last_reply = content.strip()
                     last_reply_idx = data.get("step_index", 0)
+                    total_input_tokens += data.get("input_tokens", 0)
+                    total_output_tokens += data.get("output_tokens", 0)
+                    total_cache_tokens += data.get("cache_read_tokens", 0)
 
             # 2. Once reply is found, walk backwards until we find what triggered this turn
             elif last_reply is not None:
-                if stype == "USER_INPUT":
+                if stype == "PLANNER_RESPONSE":
+                    total_input_tokens += data.get("input_tokens", 0)
+                    total_output_tokens += data.get("output_tokens", 0)
+                    total_cache_tokens += data.get("cache_read_tokens", 0)
+                elif stype == "USER_INPUT":
                     if (
                         "CRITICAL REQUIREMENT: Output ONLY" in content
                         or "You write the memory of OptChat" in content
@@ -176,6 +201,9 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
             "step_index": last_reply_idx,
             "user": last_user,
             "reply": last_reply,
+            "input_tokens": total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "cache_read_tokens": total_cache_tokens,
         }
     return None
 
@@ -264,6 +292,7 @@ class OptChatDaemon:
         self._event_subscribers: Set[asyncio.Queue[Dict[str, Any]]] = set()
         self._active_subagents: Dict[str, Dict[str, Any]] = {}
         self._logged_turn_steps: Dict[str, int] = {}
+        self.telemetry = TelemetryStore(chat_dir=self.chat_dir)
 
     def broadcast(self, event_type: str, content: str, extra: Optional[Dict[str, Any]] = None) -> None:
         """Broadcast real-time event to all connected subscriber clients (Web UI / CLI)."""
@@ -1114,6 +1143,26 @@ class OptChatDaemon:
 
                             self._logged_turn_steps[conv_id] = step_idx
                             logger.info("Auto-logged turn #%d from [%s] into memory (msgs #%d, #%d)", step_idx, ws_name, msg1.i, msg2.i)
+
+                            if getattr(self, "telemetry", None):
+                                try:
+                                    model_name = payload.get("model") or get_agy_default_model()
+                                    self.telemetry.record_turn(
+                                        workspace=ws_name,
+                                        model=model_name,
+                                        input_tokens=turn_info.get("input_tokens", 0),
+                                        output_tokens=turn_info.get("output_tokens", 0),
+                                        cache_read_tokens=turn_info.get("cache_read_tokens", 0),
+                                        conversation_id=conv_id,
+                                        step_index=step_idx,
+                                        message_id=msg2.i,
+                                        source="hook_external",
+                                        role="main",
+                                        provider="agy",
+                                        device=msg1.device,
+                                    )
+                                except Exception as te:
+                                    logger.error("Failed recording daemon hook turn telemetry: %s", te)
 
                             self.broadcast(
                                 "new_message",
