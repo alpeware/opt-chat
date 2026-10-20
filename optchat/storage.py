@@ -20,6 +20,7 @@ import socket
 from typing import Any, Dict, List, Optional, Tuple
 
 from optchat.constants import CAP, NODE
+from optchat.tree import slot
 
 logger = logging.getLogger("optchat.storage")
 
@@ -100,7 +101,7 @@ def is_valid_workspace_name(name: Any) -> bool:
 
 
 class Message:
-    __slots__ = ("i", "kind", "text", "size", "date", "key", "workspace", "device")
+    __slots__ = ("i", "kind", "text", "size", "date", "key", "workspace", "device", "imported")
 
     def __init__(
         self,
@@ -112,6 +113,7 @@ class Message:
         key: Optional[str] = None,
         workspace: Optional[str] = None,
         device: Optional[str] = None,
+        imported: bool = False,
     ):
         self.i = i
         self.kind = kind
@@ -121,6 +123,7 @@ class Message:
         self.key = key or f"{date}#{get_device_name()}"
         self.workspace = workspace
         self.device = device or (self.key.split("#", 1)[1] if "#" in self.key else get_device_name())
+        self.imported = imported
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -135,6 +138,8 @@ class Message:
             d["workspace"] = self.workspace
         if self.device:
             d["device"] = self.device
+        if getattr(self, "imported", False):
+            d["imported"] = True
         return d
 
     @classmethod
@@ -153,6 +158,7 @@ class Message:
             device = key_str.split("#", 1)[1]
 
         ws_tag = f"[{ws}] " if ws else ""
+        imported = bool(d.get("imported", False))
         return cls(
             i=int(d["i"]),
             kind=str(d["kind"]),
@@ -162,18 +168,20 @@ class Message:
             key=key_str,
             workspace=ws,
             device=device,
+            imported=imported,
         )
 
 
 
 class TreeNode:
-    __slots__ = ("l", "i", "text", "size")
+    __slots__ = ("l", "i", "text", "size", "slot")
 
-    def __init__(self, l: int, i: int, text: str, size: int):
+    def __init__(self, l: int, i: int, text: str, size: int, slot_val: Optional[int] = None):
         self.l = l
         self.i = i
         self.text = text
         self.size = size
+        self.slot = slot_val if slot_val is not None else slot(l, i)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -181,16 +189,21 @@ class TreeNode:
             "i": self.i,
             "text": self.text,
             "size": self.size,
+            "slot": self.slot,
         }
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> TreeNode:
         text = str(d["text"])
+        l = int(d["l"])
+        i = int(d["i"])
+        slot_val = int(d["slot"]) if "slot" in d else slot(l, i)
         return cls(
-            l=int(d["l"]),
-            i=int(d["i"]),
+            l=l,
+            i=i,
             text=text,
             size=int(d.get("size", len(text.encode("utf-8")))),
+            slot_val=slot_val,
         )
 
 
@@ -286,6 +299,7 @@ class Storage:
 
         self.messages: List[Message] = []
         self.tree: Dict[Tuple[int, int], TreeNode] = {}
+        self.tree_by_slot: Dict[int, TreeNode] = {}
 
     def open(self, acquire_lock: bool = True) -> None:
         """Open storage, optionally acquiring exclusive writer lock."""
@@ -344,6 +358,7 @@ class Storage:
     def _load_all(self) -> None:
         self.messages.clear()
         self.tree.clear()
+        self.tree_by_slot.clear()
 
         # Load messages
         msg_entries = self._load_stream(self.main_dir)
@@ -363,6 +378,7 @@ class Storage:
         for d in tree_entries:
             node = TreeNode.from_dict(d)
             self.tree[(node.l, node.i)] = node
+            self.tree_by_slot[node.slot] = node
 
     def _migrate_keys_to_disk(self) -> None:
         """Persist explicit 'key' fields to disk for legacy messages."""
@@ -543,6 +559,7 @@ class Storage:
             os.fsync(f.fileno())
 
         self.tree[(l, i)] = node
+        self.tree_by_slot[node.slot] = node
         return node
 
     def append_tree_node(self, l: int, i: int, text: str) -> TreeNode:
@@ -559,3 +576,9 @@ class Storage:
 
     def has_node(self, l: int, i: int) -> bool:
         return (l, i) in self.tree
+
+    def get_node_by_slot(self, s: int) -> Optional[TreeNode]:
+        return self.tree_by_slot.get(s)
+
+    def has_node_by_slot(self, s: int) -> bool:
+        return s in self.tree_by_slot

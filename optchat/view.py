@@ -14,6 +14,7 @@ not waste tokens carrying full workspace history.
 from __future__ import annotations
 
 import asyncio
+import heapq
 import json
 import logging
 import os
@@ -91,47 +92,76 @@ class LiveView:
         self._notify_settle()
 
     def fit(self, target: Optional[int] = None) -> None:
-        """Coarsen view until size <= target (or budget), merging the most due pair with a built parent.
-        
-        Uses Victor's corrected formula (UniiChat §3.2):
-          due = (T - last) / 2^l        last: the pair's last message
+        """Coarsen view until size <= target (or budget) using Victor Taelin's
+        doubly-linked list + priority heap algorithm with normalized due-ness metric:
+            d = (T + 1) / 2^l - i
+        where T is the view's end message index (UniiChat §3.2).
         """
         limit = target if target is not None else self.budget
-        total_messages = len(self.storage.messages)
+        if not self.parts:
+            return
+
         size = self.compute_size()
+        if size <= limit:
+            return
 
-        while size > limit:
-            best_due: float = -1.0
-            best_idx: int = -1
-            best_parent: Optional[Tuple[int, int]] = None
+        t = self.parts[-1].end
+        # Work on an indexed view array representing a doubly-linked list
+        view: List[Optional[Part]] = list(self.parts)
+        n = len(view)
+        next_idx: List[int] = list(range(1, n + 1))
+        prev_idx: List[int] = list(range(-1, n - 1))
 
-            # Scan adjacent pairs
-            for idx in range(len(self.parts) - 1):
-                a = self.parts[idx]
-                b = self.parts[idx + 1]
+        # Max-heap stored as min-heap with negated d: (-d, k, a, b)
+        heap: List[Tuple[float, int, Part, Part]] = []
 
-                # Match binary pair rule: same level, a.i even, b.i == a.i + 1
-                if a.l == b.l and (a.i % 2 == 0) and (b.i == a.i + 1):
-                    parent_l = a.l + 1
-                    parent_i = a.i // 2
-                    if self.storage.has_node(parent_l, parent_i):
-                        last = b.end  # Pair's last message index
-                        # Victor's formula: (T - last) / 2^l
-                        due = (total_messages - last) / (1 << a.l)
-                        if due > best_due:
-                            best_due = due
-                            best_idx = idx
-                            best_parent = (parent_l, parent_i)
+        def offer(k: int) -> None:
+            if k < 0 or k >= n:
+                return
+            j = next_idx[k]
+            if j < 0 or j >= n:
+                return
+            a = view[k]
+            b = view[j]
+            if a is None or b is None:
+                return
+            # Match binary pair rule: same level, a.i even, b.i == a.i + 1
+            if a.l != b.l or (a.i % 2 != 0) or (b.i != a.i + 1):
+                return
+            parent_l = a.l + 1
+            parent_i = a.i // 2
+            if not self.storage.has_node(parent_l, parent_i):
+                return
+            # Victor's exact due-ness metric: (T + 1) / 2^l - i
+            d = (t + 1) / (1 << a.l) - a.i
+            heapq.heappush(heap, (-d, k, a, b))
 
-            if best_parent is None or best_idx < 0:
-                # No eligible pair has its parent built; wait until one is built
-                break
+        for k in range(n):
+            offer(k)
 
-            # Replace the pair with parent
-            parent_part = Part(best_parent[0], best_parent[1])
-            self.parts[best_idx : best_idx + 2] = [parent_part]
-            size = self.compute_size()
+        while heap and size > limit:
+            neg_d, k, a, b = heapq.heappop(heap)
+            j = next_idx[k]
+            if j >= n or view[k] is not a or view[j] is not b:
+                continue
 
+            parent_l = a.l + 1
+            parent_i = a.i // 2
+            up = Part(parent_l, parent_i)
+
+            size += up.get_text_bytes(self.storage) - a.get_text_bytes(self.storage) - b.get_text_bytes(self.storage)
+            view[k] = up
+            view[j] = None
+
+            next_idx[k] = next_idx[j]
+            if next_idx[j] < n:
+                prev_idx[next_idx[j]] = k
+
+            if prev_idx[k] >= 0:
+                offer(prev_idx[k])
+            offer(k)
+
+        self.parts = [p for p in view if p is not None]
         self._notify_settle()
 
     def save_view(self, path: Optional[Path] = None) -> None:

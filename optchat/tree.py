@@ -10,10 +10,12 @@ Binary summaries:
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 from optchat.constants import NODE, PLACEHOLDER
-from optchat.storage import Message, Storage, TreeNode
+
+if TYPE_CHECKING:
+    from optchat.storage import Message, Storage, TreeNode
 
 
 def is_power_of_two(n: int) -> bool:
@@ -44,6 +46,33 @@ def node_covers(l: int, i: int) -> Tuple[int, int]:
     start = i * n
     end = start + n
     return start, end
+
+
+def slot(l: int, i: int) -> int:
+    """Contiguous 1D interleaving index mapping (level, index) to a unique non-negative integer.
+    Formula: (2 * i + 1) * 2^l - 1
+    Maps:
+      l=0: 0, 2, 4, 6, ... (2i)
+      l=1: 1, 5, 9, 13, ... (4i + 1)
+      l=2: 3, 11, 19, 27, ... (8i + 3)
+      l: (2i + 1) * 2^l - 1
+    """
+    return (2 * i + 1) * (1 << l) - 1
+
+
+def unslot(s: int) -> Tuple[int, int]:
+    """Inverse of slot(l, i), mapping integer slot back to (level, index).
+    s + 1 = (2 * i + 1) * 2^l
+    2^l is the lowest power of two dividing s + 1.
+    """
+    if s < 0:
+        raise ValueError(f"slot must be >= 0, got {s}")
+    val = s + 1
+    tz = (val & -val).bit_length() - 1  # number of trailing zeros
+    l = tz
+    odd = val >> l
+    i = (odd - 1) // 2
+    return l, i
 
 
 def flatten_newlines(text: str) -> str:

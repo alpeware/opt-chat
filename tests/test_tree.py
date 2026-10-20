@@ -15,7 +15,44 @@ from optchat.tree import (
     node_address,
     node_coords,
     node_covers,
+    slot,
+    unslot,
 )
+
+
+def test_slot_and_unslot():
+    # Test level 0: 0, 2, 4, 6...
+    assert slot(0, 0) == 0
+    assert slot(0, 1) == 2
+    assert slot(0, 2) == 4
+    assert unslot(0) == (0, 0)
+    assert unslot(2) == (0, 1)
+    assert unslot(4) == (0, 2)
+
+    # Test level 1: 1, 5, 9, 13...
+    assert slot(1, 0) == 1
+    assert slot(1, 1) == 5
+    assert slot(1, 2) == 9
+    assert unslot(1) == (1, 0)
+    assert unslot(5) == (1, 1)
+    assert unslot(9) == (1, 2)
+
+    # Test level 2: 3, 11, 19...
+    assert slot(2, 0) == 3
+    assert slot(2, 1) == 11
+    assert slot(2, 2) == 19
+    assert unslot(3) == (2, 0)
+    assert unslot(11) == (2, 1)
+    assert unslot(19) == (2, 2)
+
+    # Comprehensive round-trip check
+    for l in range(10):
+        for i in range(20):
+            s = slot(l, i)
+            assert unslot(s) == (l, i)
+
+    with pytest.raises(ValueError):
+        unslot(-1)
 
 
 def test_binary_coordinates():

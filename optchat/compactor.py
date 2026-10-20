@@ -58,9 +58,19 @@ class Compactor:
         self._running_tasks: Set[asyncio.Task[None]] = set()
         self._is_stopped = False
 
-        # Ready queue of (level, index, end)
-        self.ready_queue: Deque[Tuple[int, int, int]] = deque()
+        # Two-queue priority scheduling (UniiChat §4):
+        # side 0 (live chat): interactive turns, prioritized
+        # side 1 (import): bulk imports, background
+        self.live_queue: Deque[Tuple[int, int, int]] = deque()
+        self.import_queue: Deque[Tuple[int, int, int]] = deque()
         self._queued: Set[Tuple[int, int]] = set()
+
+    @property
+    def ready_queue(self) -> Deque[Tuple[int, int, int]]:
+        """Combined deque view for backwards-compatibility."""
+        combined: Deque[Tuple[int, int, int]] = deque(self.live_queue)
+        combined.extend(self.import_queue)
+        return combined
 
     def start(self) -> None:
         """Start or kick the pump."""
@@ -75,8 +85,34 @@ class Compactor:
             task.cancel()
         self._running_tasks.clear()
         self.busy.clear()
-        self.ready_queue.clear()
+        self.live_queue.clear()
+        self.import_queue.clear()
         self._queued.clear()
+
+    def _get_node_side(self, l: int, i: int) -> int:
+        """Determine side for node: 0 for live chat turn, 1 for bulk imported messages (UniiChat §4)."""
+        if l == 0:
+            msg = self.storage.get_message(i)
+            if msg is not None and getattr(msg, "imported", False):
+                return 1
+            return 0
+        # For level > 0, check the last message covered by the node
+        last_msg_idx = (i + 1) * (1 << l) - 1
+        msg = self.storage.get_message(last_msg_idx)
+        if msg is not None and getattr(msg, "imported", False):
+            return 1
+        return 0
+
+    def _enqueue_node(self, l: int, i: int, end: int) -> None:
+        node_key = (l, i)
+        if node_key in self.busy or node_key in self._queued:
+            return
+        side = self._get_node_side(l, i)
+        if side == 0:
+            self.live_queue.append((l, i, end))
+        else:
+            self.import_queue.append((l, i, end))
+        self._queued.add(node_key)
 
     def _seed_ready_queue(self) -> None:
         """Queue all currently unbuilt nodes whose predecessors are ready (UniiChat §4)."""
@@ -90,9 +126,7 @@ class Compactor:
             node_key = (0, i)
             if not self.storage.has_node(0, i):
                 if unbuilt_before < self.concurrency:
-                    if node_key not in self.busy and node_key not in self._queued:
-                        self.ready_queue.append((0, i, i))
-                        self._queued.add(node_key)
+                    self._enqueue_node(0, i, i)
                 unbuilt_before += 1
 
         # 2. Merge nodes (l > 0): start once both halves are built
@@ -105,8 +139,7 @@ class Compactor:
                 if not self.storage.has_node(l, i) and node_key not in self.busy and node_key not in self._queued:
                     if self._is_ready(l, i):
                         end = (i + 1) * node_span
-                        self.ready_queue.append((l, i, end))
-                        self._queued.add(node_key)
+                        self._enqueue_node(l, i, end)
                 i += 1
             l += 1
 
@@ -120,8 +153,7 @@ class Compactor:
             if self._is_ready(parent_l, parent_i):
                 node_span = 1 << parent_l
                 end = (parent_i + 1) * node_span
-                self.ready_queue.append((parent_l, parent_i, end))
-                self._queued.add(parent_key)
+                self._enqueue_node(parent_l, parent_i, end)
 
         if l == 0:
             total_messages = len(self.storage.messages)
@@ -130,34 +162,46 @@ class Compactor:
                 k = (0, next_i)
                 if not self.storage.has_node(0, next_i):
                     if unbuilt_before < self.concurrency:
-                        if k not in self.busy and k not in self._queued:
-                            self.ready_queue.append((0, next_i, next_i))
-                            self._queued.add(k)
+                        self._enqueue_node(0, next_i, next_i)
                     unbuilt_before += 1
 
+    def _dispatch_node(self, l: int, i: int, end: int) -> None:
+        node_key = (l, i)
+        self._queued.discard(node_key)
+
+        if self.storage.has_node(l, i) or node_key in self.busy:
+            return
+
+        if not self._is_ready(l, i):
+            return
+
+        self.busy.add(node_key)
+        task = asyncio.create_task(self._build_node(l, i, end))
+        self._running_tasks.add(task)
+        task.add_done_callback(self._running_tasks.discard)
+
     def pump(self) -> None:
-        """Start ready nodes from the queue up to concurrency limit (UniiChat §4)."""
+        """Start ready nodes from the queue up to concurrency limit (UniiChat §4).
+        
+        Two-queue priority:
+        Drains live chat turns (side 0) first. Only if capacity remains does it
+        dispatch background import nodes (side 1).
+        """
         if self._is_stopped:
             return
 
-        if not self.ready_queue:
+        if not self.live_queue and not self.import_queue:
             self._seed_ready_queue()
 
-        while len(self.busy) < self.concurrency and self.ready_queue:
-            l, i, end = self.ready_queue.popleft()
-            node_key = (l, i)
-            self._queued.discard(node_key)
+        # 1. Prioritize live chat turns (side 0)
+        while len(self.busy) < self.concurrency and self.live_queue:
+            l, i, end = self.live_queue.popleft()
+            self._dispatch_node(l, i, end)
 
-            if self.storage.has_node(l, i) or node_key in self.busy:
-                continue
-
-            if not self._is_ready(l, i):
-                continue
-
-            self.busy.add(node_key)
-            task = asyncio.create_task(self._build_node(l, i, end))
-            self._running_tasks.add(task)
-            task.add_done_callback(self._running_tasks.discard)
+        # 2. Yield remaining worker slots to background imports (side 1)
+        while len(self.busy) < self.concurrency and self.import_queue:
+            l, i, end = self.import_queue.popleft()
+            self._dispatch_node(l, i, end)
 
     def _is_ready(self, l: int, i: int) -> bool:
         if l == 0:

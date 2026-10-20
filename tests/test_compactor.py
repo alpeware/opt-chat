@@ -102,3 +102,40 @@ async def test_compactor_in_order_compression(tmp_path: Path):
 
     compactor.stop()
     storage.close()
+
+
+@pytest.mark.asyncio
+async def test_compactor_two_queue_priority(tmp_path: Path):
+    storage = Storage(tmp_path / "chat")
+    storage.open()
+    view = LiveView(storage)
+    provider = MockLLMProvider()
+    compactor = Compactor(storage, view, provider, concurrency=2)
+
+    # Message 0: imported message (side 1)
+    msg0 = storage.append_message("user", "Imported 0", workspace="legacy")
+    msg0.imported = True
+    view.on_new_message(msg0.i)
+
+    # Message 1: live chat turn (side 0)
+    msg1 = storage.append_message("user", "Live turn 1")
+    msg1.imported = False
+    view.on_new_message(msg1.i)
+
+    # Seed queues
+    compactor._seed_ready_queue()
+
+    # Verify queue separation: live message 1 in live_queue, imported message 0 in import_queue
+    assert (0, 1, 1) in compactor.live_queue
+    assert (0, 0, 0) in compactor.import_queue
+
+    # Because live_queue has priority in pump(), live node (0, 1) is dispatched
+    compactor.pump()
+    for _ in range(20):
+        if storage.has_node(0, 1):
+            break
+        await asyncio.sleep(0.05)
+
+    assert storage.has_node(0, 1)
+    compactor.stop()
+    storage.close()
