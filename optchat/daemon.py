@@ -50,6 +50,7 @@ def extract_subagent_report_from_transcript(transcript_path: str) -> Optional[st
     if not transcript_path or not os.path.isfile(transcript_path):
         return None
     report: Optional[str] = None
+    last_planner_content: Optional[str] = None
     try:
         with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -63,14 +64,14 @@ def extract_subagent_report_from_transcript(transcript_path: str) -> Optional[st
                             msg = tc.get("args", {}).get("Message")
                             if msg:
                                 report = msg
-                    # 2. Check for final assistant content if no send_message yet
-                    if not report and step.get("type") == "PLANNER_RESPONSE" and step.get("content"):
-                        report = step.get("content")
+                    # 2. Track latest planner response
+                    if step.get("type") == "PLANNER_RESPONSE" and step.get("content"):
+                        last_planner_content = step.get("content")
                 except Exception:
                     continue
     except Exception as e:
         logger.debug("Failed reading subagent transcript %s: %s", transcript_path, e)
-    return report
+    return report or last_planner_content
 
 
 def parse_system_message_prompt(raw: str) -> str:
@@ -259,6 +260,34 @@ def extract_workspace_from_transcript(transcript_path: str) -> Optional[str]:
     try:
         with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
+
+        # 1. Check beginning of transcript for active workspaces declaration or working dir
+        for line in lines[:8]:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                data = json.loads(stripped)
+            except Exception:
+                continue
+            content = data.get("content", "")
+            if isinstance(content, str):
+                if "Active Workspaces:" in content:
+                    for part in content.split("Active Workspaces:")[1].split("\n"):
+                        p_str = part.strip()
+                        if p_str.startswith("- "):
+                            ws_dir = p_str[2:].strip().replace("file://", "")
+                            wname = Path(ws_dir).name
+                            if is_valid_workspace_name(wname) and wname not in ("desk", "general", "tmp"):
+                                return wname
+                if "Command Working Directory:" in content:
+                    cwd_line = content.split("Command Working Directory:")[1].split("\n")[0].strip().replace("file://", "")
+                    if cwd_line:
+                        wname = Path(cwd_line).name
+                        if is_valid_workspace_name(wname) and wname not in ("desk", "general", "tmp"):
+                            return wname
+
+        # 2. Check tool calls (walking backwards for most recent activity)
         for line in reversed(lines):
             stripped = line.strip()
             if not stripped:
@@ -270,27 +299,86 @@ def extract_workspace_from_transcript(transcript_path: str) -> Optional[str]:
             calls = data.get("tool_calls", [])
             for c in calls:
                 args = c.get("args", {})
-                cwd = args.get("Cwd")
+                cwd = args.get("Cwd") or args.get("cwd")
                 if cwd and isinstance(cwd, str):
-                    clean_cwd = cwd.strip("\"'")
+                    clean_cwd = cwd.strip("\"'").replace("file://", "")
                     if clean_cwd and not clean_cwd.startswith("/tmp") and "agy_isolated" not in clean_cwd:
                         cand = Path(clean_cwd).name
-                        if is_valid_workspace_name(cand):
+                        if is_valid_workspace_name(cand) and cand not in ("desk", "general"):
                             return cand
-                tfile = args.get("TargetFile") or args.get("AbsolutePath")
+                tfile = (
+                    args.get("Path")
+                    or args.get("path")
+                    or args.get("TargetFile")
+                    or args.get("AbsolutePath")
+                    or args.get("file_path")
+                )
                 if tfile and isinstance(tfile, str):
-                    clean_file = tfile.strip("\"'")
+                    clean_file = tfile.strip("\"'").replace("file://", "")
                     if clean_file and not clean_file.startswith("/tmp") and "agy_isolated" not in clean_file:
                         p = Path(clean_file).parent
                         while p != p.parent:
-                            if (p / ".git").exists() and is_valid_workspace_name(p.name):
+                            if (p / ".git").exists() and is_valid_workspace_name(p.name) and p.name not in ("desk", "general"):
                                 return p.name
                             p = p.parent
                         cand = Path(clean_file).parent.name
-                        if is_valid_workspace_name(cand):
+                        if is_valid_workspace_name(cand) and cand not in ("desk", "general"):
                             return cand
     except Exception as e:
         logger.debug("Failed extracting workspace from transcript %s: %s", transcript_path, e)
+    return None
+
+
+def detect_workspace_from_content(text: Optional[str]) -> Optional[str]:
+    """Heuristic detection of workspace from message content, prompt text, or filenames."""
+    if not text or not isinstance(text, str):
+        return None
+    lower = text.lower()
+
+    # 1. clj-einsum
+    if any(k in lower for k in [
+        "clj-einsum", "einsum", "uop", "render.clj", "schedule.clj", "gemma4.sh",
+        "phase 4a", "phase 4b", "phase 5a", "phase 5b", "phase 5c", "phase 5d", "phase 5e",
+        "phase 6a", "phase 6b", "phase 6c", "phase 6d", "phase 7a", "phase 7b", "phase 7c",
+        "drm keepalive", "drm-keepalive", "ensure-amdgpu-active", "aqlprofile",
+        "int4", "wmma", "wmma gemm", "gemv", "rdna3", "7900 xtx", "gfx1100",
+        "tiered_turbo_kv", "multi_pl_e"
+    ]):
+        return "clj-einsum"
+
+    # 2. gemma-4-developer-agent
+    if any(k in lower for k in [
+        "gemma-4-developer-agent", "gemma4", "kaggle", "gpu evaluation", "community intelligence",
+        "ast_nav", "prepare_gpu_kernel", "val_subset", "locater", "patcher", "verifier",
+        "train_subagent_lora", "rich_3480", "rich_2725", "rich_3676", "requests_7205",
+        "fastapi_14455"
+    ]):
+        return "gemma-4-developer-agent"
+
+    # 3. gsuite-cli
+    if any(k in lower for k in [
+        "gsuite-cli", "gsuite", "arayofsonny", "gmail", "google calendar", "google drive"
+    ]):
+        return "gsuite-cli"
+
+    # 4. mercury-cli
+    if any(k in lower for k in [
+        "mercury-cli", "mercury", "checking ••", "savings ••"
+    ]):
+        return "mercury-cli"
+
+    # 5. jacquard
+    if any(k in lower for k in [
+        "jacquard", "spy_theta", "spy_gex", "alpaca"
+    ]):
+        return "jacquard"
+
+    # 6. opt-chat
+    if any(k in lower for k in [
+        "opt-chat", "optchat", "engine.sock", "telemetry.db"
+    ]):
+        return "opt-chat"
+
     return None
 
 
@@ -365,6 +453,122 @@ class OptChatDaemon:
                 return from_tpath
         ws_target = (str(self.workspace) if self.workspace else None) or os.getcwd()
         return Path(ws_target).name if ws_target else "general"
+
+    def _find_subagent_descriptor(self, conv_id: Optional[str], parent_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Look up Antigravity subagent metadata descriptor json file."""
+        if not conv_id or conv_id == "unknown":
+            return None
+        brain_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+        if parent_id and parent_id != "unknown":
+            p = brain_dir / parent_id / ".system_generated" / "subagents" / f"{conv_id}.json"
+            if p.is_file():
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except Exception:
+                    pass
+        matches = list(brain_dir.glob(f"*/.system_generated/subagents/{conv_id}.json"))
+        if matches:
+            try:
+                with open(matches[0], "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return None
+
+    def _is_subagent_conversation(self, conv_id: Optional[str], parent_id: Optional[str] = None) -> bool:
+        """Return True if conv_id belongs to a subagent."""
+        if not conv_id or conv_id == "unknown":
+            return False
+        if bool(parent_id and parent_id != "unknown"):
+            return True
+        if conv_id in self._active_subagents:
+            return True
+        if self._find_subagent_descriptor(conv_id, parent_id) is not None:
+            return True
+        return False
+
+    def _resolve_subagent_info(
+        self,
+        conv_id: Optional[str] = None,
+        parent_id: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        tpath: Optional[str] = None,
+        text: Optional[str] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Resolve workspace and role for a subagent using multi-tier detection."""
+        role: Optional[str] = None
+        ws: Optional[str] = None
+
+        # Tier 1: Antigravity Subagent Descriptor JSON
+        desc_data = self._find_subagent_descriptor(conv_id, parent_id)
+        if desc_data:
+            desc = desc_data.get("subagentDescriptor", {})
+            r_cand = desc.get("role") or desc.get("typeName")
+            if r_cand and r_cand.lower() not in ("subagent", "unknown"):
+                role = r_cand
+            uris = desc_data.get("workspaceUris", [])
+            if uris and isinstance(uris, list):
+                cand = Path(str(uris[0]).replace("file://", "").strip()).name
+                if is_valid_workspace_name(cand) and cand not in ("desk", "general", "tmp"):
+                    ws = cand
+
+        # Tier 2: In-Memory Active Subagents
+        if conv_id and conv_id in self._active_subagents:
+            cached = self._active_subagents[conv_id]
+            if not role and cached.get("role") and cached.get("role").lower() not in ("subagent", "unknown"):
+                role = cached.get("role")
+            if not ws:
+                c_ws = cached.get("workspace")
+                if c_ws and is_valid_workspace_name(c_ws) and c_ws not in ("desk", "general", "tmp"):
+                    ws = c_ws
+
+        # Tier 3: Subagent Transcript Inspection
+        if not ws:
+            check_tpath = tpath
+            if not check_tpath or not os.path.isfile(check_tpath):
+                if conv_id and conv_id != "unknown":
+                    cand_p = Path.home() / ".gemini" / "antigravity-cli" / "brain" / conv_id / ".system_generated" / "logs" / "transcript.jsonl"
+                    if cand_p.is_file():
+                        check_tpath = str(cand_p)
+            if check_tpath and os.path.isfile(check_tpath):
+                from_trans = extract_workspace_from_transcript(check_tpath)
+                if from_trans and is_valid_workspace_name(from_trans) and from_trans not in ("desk", "general", "tmp"):
+                    ws = from_trans
+
+        # Tier 4: Content Heuristics
+        if not ws and text:
+            from_text = detect_workspace_from_content(text)
+            if from_text and is_valid_workspace_name(from_text) and from_text not in ("desk", "general", "tmp"):
+                ws = from_text
+
+        # Tier 5: Payload callerCwd / workspacePaths (only if not desk / general / tmp)
+        if not ws and payload:
+            caller_cwd = payload.get("callerCwd")
+            ws_paths = payload.get("workspacePaths") or []
+            candidates = ([caller_cwd] if caller_cwd else []) + list(ws_paths)
+            for c in candidates:
+                if c and isinstance(c, str) and "agy_isolated" not in c and "/tmp" not in c:
+                    cand = Path(c.replace("file://", "").strip()).name
+                    if is_valid_workspace_name(cand) and cand not in ("desk", "general", "tmp", "config"):
+                        ws = cand
+                        break
+
+        # Fallback role if still not set
+        if not role and payload:
+            role = payload.get("agentName")
+        if role and role.lower() == "unknown":
+            role = None
+
+        # Update cache if conv_id is present
+        if conv_id and conv_id != "unknown":
+            sub_entry = self._active_subagents.setdefault(conv_id, {})
+            if ws and (not sub_entry.get("workspace") or sub_entry.get("workspace") in ("desk", "general")):
+                sub_entry["workspace"] = ws
+            if role and sub_entry.get("role") in (None, "Subagent", "unknown"):
+                sub_entry["role"] = role
+
+        return ws, role
 
     async def _start_web_server(self) -> None:
         """Start the responsive web interface as a managed child subprocess."""
@@ -658,7 +862,19 @@ class OptChatDaemon:
                 "is_settled": self.view.is_settled(),
                 "web_server": web_info,
                 "workspaces": sorted(list(known_workspaces)),
+                "active_subagents_count": len(self._active_subagents),
             }
+
+        elif action in ("get_subagents", "get_active_subagents"):
+            ws_filter = req.get("workspace")
+            sub_list = []
+            for cid, info in list(self._active_subagents.items()):
+                ws = info.get("workspace")
+                if not ws_filter or ws_filter.lower() == "all" or (ws and ws.lower() == ws_filter.lower()):
+                    item = dict(info)
+                    item["conversationId"] = cid
+                    sub_list.append(item)
+            return {"status": "ok", "subagents": sub_list}
 
         elif action == "restart":
             logger.info("Daemon received restart request via IPC.")
@@ -1015,12 +1231,15 @@ class OptChatDaemon:
                         subagents = json.loads(subagents)
                     except Exception:
                         subagents = []
+                if not subagents and args.get("Role"):
+                    subagents = [args]
+                parent_ws = self._resolve_workspace_name(payload, tpath)
                 for sub in subagents:
                     role = sub.get("Role", "Subagent")
                     tname = sub.get("TypeName", "subagent")
                     prompt = sub.get("Prompt", "")
                     summary = f"Spawned subagent: {role} ({tname}) — {prompt[:120]}"
-                    self.broadcast("subagent_spawn", summary, extra={"role": role, "typeName": tname, "prompt": prompt})
+                    self.broadcast("subagent_spawn", summary, extra={"role": role, "typeName": tname, "prompt": prompt, "workspace": parent_ws})
             return {"status": "ok"}
 
         elif event == "post_tool":
@@ -1038,73 +1257,160 @@ class OptChatDaemon:
                         subagents = json.loads(subagents)
                     except Exception:
                         subagents = []
+                if not subagents and args.get("Role"):
+                    subagents = [args]
+                parent_ws = self._resolve_workspace_name(payload, tpath)
                 spawned_ids = re.findall(r'"conversationId":\s*"([^"]+)"', str(result or ""))
+
+                # Also scan brain subagents directory for newly created descriptor files
+                brain_subagents_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain" / conv_id / ".system_generated" / "subagents"
+                if brain_subagents_dir.is_dir():
+                    for f in brain_subagents_dir.glob("*.json"):
+                        cid = f.stem
+                        if cid not in spawned_ids:
+                            spawned_ids.append(cid)
+
                 if spawned_ids:
                     for idx, cid in enumerate(spawned_ids):
                         sub = subagents[idx] if idx < len(subagents) else {}
-                        role = sub.get("Role", "Subagent")
-                        tname = sub.get("TypeName", "subagent")
+                        role = sub.get("Role")
+                        tname = sub.get("TypeName")
                         prompt = sub.get("Prompt", "")
+                        sub_ws = None
+
+                        # Check descriptor file if available
+                        desc_file = brain_subagents_dir / f"{cid}.json" if brain_subagents_dir.is_dir() else None
+                        if desc_file and desc_file.is_file():
+                            try:
+                                with open(desc_file, "r", encoding="utf-8") as dfp:
+                                    ddata = json.load(dfp)
+                                    d_desc = ddata.get("subagentDescriptor", {})
+                                    if not role:
+                                        role = d_desc.get("role") or d_desc.get("typeName")
+                                    if not tname:
+                                        tname = d_desc.get("typeName")
+                                    d_uris = ddata.get("workspaceUris", [])
+                                    if d_uris and isinstance(d_uris, list):
+                                        cand_w = Path(str(d_uris[0]).replace("file://", "").strip()).name
+                                        if is_valid_workspace_name(cand_w) and cand_w not in ("desk", "general", "tmp"):
+                                            sub_ws = cand_w
+                            except Exception:
+                                pass
+
+                        if not role:
+                            role = "Subagent"
+                        if not tname:
+                            tname = "subagent"
+                        if not sub_ws:
+                            from_p = detect_workspace_from_content(prompt)
+                            if from_p and from_p not in ("desk", "general", "tmp"):
+                                sub_ws = from_p
+                            elif parent_ws not in ("desk", "general", "tmp"):
+                                sub_ws = parent_ws
+
                         self._active_subagents[cid] = {
                             "role": role,
                             "typeName": tname,
                             "prompt": prompt,
                             "spawn_time": time.time(),
+                            "workspace": sub_ws,
+                            "last_tool": None,
+                            "report": None,
+                            "status": "running",
                         }
                         self.broadcast(
                             "subagent_spawn",
                             f"Spawned subagent: {role} ({tname}) — {prompt[:120]}",
-                            extra={"role": role, "typeName": tname, "prompt": prompt, "conversationId": cid},
+                            extra={"role": role, "typeName": tname, "prompt": prompt, "workspace": sub_ws, "conversationId": cid},
                         )
                 else:
                     for sub in subagents:
                         role = sub.get("Role", "Subagent")
                         tname = sub.get("TypeName", "subagent")
                         prompt = sub.get("Prompt", "")
+                        cand_ws = detect_workspace_from_content(prompt)
+                        if not cand_ws or cand_ws in ("desk", "general", "tmp"):
+                            cand_ws = parent_ws if parent_ws not in ("desk", "general", "tmp") else None
                         self.broadcast(
                             "subagent_spawn",
                             f"Spawned subagent: {role} ({tname}) — {prompt[:120]}",
-                            extra={"role": role, "typeName": tname, "prompt": prompt},
+                            extra={"role": role, "typeName": tname, "prompt": prompt, "workspace": cand_ws},
                         )
                 return {"status": "ok"}
 
             # 2. Subagent reporting back via send_message
             if name == "send_message":
                 sub_info = self._active_subagents.get(conv_id, {})
-                sub_role = sub_info.get("role") or agent_name or "Subagent"
                 msg_content = args.get("Message", "")
+                sub_ws, sub_role = self._resolve_subagent_info(
+                    conv_id=conv_id,
+                    parent_id=parent_id,
+                    payload=payload,
+                    tpath=tpath,
+                    text=msg_content,
+                )
+                if not sub_role:
+                    sub_role = sub_info.get("role") or agent_name or "Subagent"
+                if not sub_ws:
+                    sub_ws = sub_info.get("workspace")
+                if not sub_ws:
+                    cand_ws = self._resolve_workspace_name(payload, tpath)
+                    if cand_ws not in ("desk", "general", "tmp"):
+                        sub_ws = cand_ws
+
                 if msg_content:
                     clean_msg = clean_message_text(msg_content)
                     formatted_msg = f"[{sub_role}] {clean_msg}"
                     already_logged = False
                     if self.storage and self.storage.messages:
-                        for m in self.storage.messages[-5:]:
+                        for m in self.storage.messages[-10:]:
                             if m.kind == "work" and m.text.strip() == formatted_msg.strip():
                                 already_logged = True
+                                if not m.workspace and sub_ws:
+                                    m.workspace = sub_ws
                                 break
+                    sub_info["report"] = clean_msg
+                    sub_info["status"] = "reported"
+                    sub_info["workspace"] = sub_ws
+                    sub_info["role"] = sub_role
                     if not already_logged:
                         self.broadcast(
                             "subagent_report",
                             f"[{sub_role}] {clean_msg}",
-                            extra={"role": sub_role, "report": clean_msg, "conversationId": conv_id},
+                            extra={"role": sub_role, "report": clean_msg, "workspace": sub_ws, "conversationId": conv_id},
                         )
                         if self.storage and self.view:
-                            work_msg = self.storage.append_message("work", f"[{sub_role}] {clean_msg}")
+                            work_msg = self.storage.append_message("work", f"[{sub_role}] {clean_msg}", workspace=sub_ws)
                             self.view.on_new_message(work_msg.i)
                             if self.compactor:
                                 self.compactor.pump()
                 return {"status": "ok"}
 
             # 3. Intermediate tool execution inside a subagent
-            if parent_id or (conv_id in self._active_subagents):
+            is_subagent_tool = bool(parent_id or (conv_id in self._active_subagents) or self._is_subagent_conversation(conv_id, parent_id))
+            if is_subagent_tool:
+                sub_ws, sub_role = self._resolve_subagent_info(
+                    conv_id=conv_id,
+                    parent_id=parent_id,
+                    payload=payload,
+                    tpath=tpath,
+                )
                 sub_info = self._active_subagents.get(conv_id, {})
-                sub_role = sub_info.get("role") or agent_name or "Subagent"
+                if not sub_role:
+                    sub_role = sub_info.get("role") or agent_name or "Subagent"
+                if not sub_ws:
+                    sub_ws = sub_info.get("workspace")
+                if not sub_ws:
+                    cand_ws = self._resolve_workspace_name(payload, tpath)
+                    if cand_ws not in ("desk", "general", "tmp"):
+                        sub_ws = cand_ws
                 args_str = json.dumps(args)
                 if len(args_str) > 140:
                     args_str = args_str[:140] + "..."
                 tool_desc = f"[{sub_role}] ⚡ {name}: {args_str}"
                 if error:
                     tool_desc += f" (error: {error})"
+                sub_info["last_tool"] = f"{name}: {args_str}"
                 self.broadcast(
                     "subagent_tool",
                     tool_desc,
@@ -1114,6 +1420,7 @@ class OptChatDaemon:
                         "args": args,
                         "error": error,
                         "result": str(result)[:300] if result else None,
+                        "workspace": sub_ws,
                         "conversationId": conv_id,
                     },
                 )
@@ -1125,9 +1432,9 @@ class OptChatDaemon:
             return {"status": "ok"}
 
         elif event == "stop":
-            if parent_id or (conv_id in self._active_subagents):
-                sub_info = self._active_subagents.pop(conv_id, {})
-                sub_role = sub_info.get("role") or agent_name or "Subagent"
+            is_subagent = bool(parent_id or (conv_id in self._active_subagents) or self._is_subagent_conversation(conv_id, parent_id))
+            if is_subagent:
+                sub_info = self._active_subagents.get(conv_id, {})
 
                 # Check if report needs to be extracted from transcript (e.g. if send_message was not used)
                 tpath = payload.get("transcriptPath")
@@ -1137,9 +1444,30 @@ class OptChatDaemon:
                         if cand.is_file():
                             tpath = str(cand)
 
-                sub_tokens = extract_cumulative_tokens_from_transcript(tpath) if tpath else {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
-                sub_ws = self._resolve_workspace_name(payload, tpath)
+                report_text = None
+                if tpath and os.path.isfile(tpath):
+                    report_text = extract_subagent_report_from_transcript(tpath)
 
+                sub_ws, sub_role = self._resolve_subagent_info(
+                    conv_id=conv_id,
+                    parent_id=parent_id,
+                    payload=payload,
+                    tpath=tpath,
+                    text=report_text or sub_info.get("report"),
+                )
+                if not sub_role or sub_role.lower() in ("subagent", "unknown"):
+                    sub_role = sub_info.get("role") or agent_name or "Subagent"
+                if not sub_ws:
+                    sub_ws = sub_info.get("workspace")
+                if not sub_ws:
+                    cand_ws = self._resolve_workspace_name(payload, tpath)
+                    if cand_ws not in ("desk", "general", "tmp"):
+                        sub_ws = cand_ws
+
+                # Remove from active subagents now that everything is resolved
+                self._active_subagents.pop(conv_id, None)
+
+                sub_tokens = extract_cumulative_tokens_from_transcript(tpath) if tpath else {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
                 sub_spawn_time = sub_info.get("spawn_time")
                 sub_dur_ms = int((time.time() - sub_spawn_time) * 1000) if sub_spawn_time else 0
                 sub_model = payload.get("model") or get_agy_default_model()
@@ -1148,7 +1476,7 @@ class OptChatDaemon:
                 if getattr(self, "telemetry", None):
                     try:
                         self.telemetry.record_turn(
-                            workspace=sub_ws,
+                            workspace=sub_ws or "desk",
                             model=sub_model,
                             input_tokens=sub_tokens["input_tokens"],
                             output_tokens=sub_tokens["output_tokens"],
@@ -1171,7 +1499,12 @@ class OptChatDaemon:
                     "cost_usd": sub_cost,
                     "duration_ms": sub_dur_ms,
                 }
-                extra_data: Dict[str, Any] = {"role": sub_role, "conversationId": conv_id, "tokens": sub_tokens_info}
+                extra_data: Dict[str, Any] = {
+                    "role": sub_role,
+                    "conversationId": conv_id,
+                    "workspace": sub_ws,
+                    "tokens": sub_tokens_info,
+                }
 
                 self.broadcast(
                     "subagent_complete",
@@ -1179,29 +1512,26 @@ class OptChatDaemon:
                     extra=extra_data,
                 )
 
-                # Check if report needs to be extracted from transcript (e.g. if send_message was not used)
-                tpath = payload.get("transcriptPath")
-                if tpath and os.path.isfile(tpath):
-                    report = extract_subagent_report_from_transcript(tpath)
-                    if report:
-                        clean_rep = clean_message_text(report)
-                        formatted_rep = f"[{sub_role}] {clean_rep}"
-                        already_logged = False
-                        if self.storage and self.storage.messages:
-                            for m in self.storage.messages[-5:]:
-                                if m.kind == "work" and m.text.strip() == formatted_rep.strip():
-                                    already_logged = True
-                                    break
-                        if not already_logged:
-                            sub_ws = self._resolve_workspace_name(payload, tpath)
-                            self.broadcast(
-                                "subagent_report",
-                                f"[{sub_role}] {clean_rep}",
-                                extra={"role": sub_role, "report": clean_rep, "workspace": sub_ws, "conversationId": conv_id, "tokens": sub_tokens_info},
-                            )
-                            if self.storage and self.view:
-                                work_msg = self.storage.append_message("work", f"[{sub_role}] {clean_rep}", workspace=sub_ws)
-                                self.view.on_new_message(work_msg.i)
+                if report_text:
+                    clean_rep = clean_message_text(report_text)
+                    formatted_rep = f"[{sub_role}] {clean_rep}"
+                    already_logged = False
+                    if self.storage and self.storage.messages:
+                        for m in self.storage.messages[-10:]:
+                            if m.kind == "work" and m.text.strip() == formatted_rep.strip():
+                                already_logged = True
+                                if not m.workspace and sub_ws:
+                                    m.workspace = sub_ws
+                                break
+                    if not already_logged:
+                        self.broadcast(
+                            "subagent_report",
+                            f"[{sub_role}] {clean_rep}",
+                            extra={"role": sub_role, "report": clean_rep, "workspace": sub_ws, "conversationId": conv_id, "tokens": sub_tokens_info},
+                        )
+                        if self.storage and self.view:
+                            work_msg = self.storage.append_message("work", f"[{sub_role}] {clean_rep}", workspace=sub_ws)
+                            self.view.on_new_message(work_msg.i)
 
                 if self.compactor:
                     self.compactor.pump()

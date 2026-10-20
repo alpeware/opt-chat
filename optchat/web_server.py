@@ -198,6 +198,7 @@ class OptChatWebServer:
         self.app.router.add_post("/api/command", self.handle_api_command)
         self.app.router.add_post("/api/zoom", self.handle_api_zoom)
         self.app.router.add_post("/api/voice", self.handle_api_voice)
+        self.app.router.add_get("/api/subagents", self.handle_api_subagents)
         self.app.router.add_get("/api/file", self.handle_api_file)
         self.app.router.add_get("/api/telemetry", self.handle_api_telemetry)
         self.app.router.add_get("/api/telemetry/request/{req_id}", self.handle_api_telemetry_request)
@@ -642,6 +643,16 @@ class OptChatWebServer:
             "model": self.model or "gemini-3.8-flash-high",
             "workspaces": sorted(list(known_workspaces)),
         })
+
+    async def handle_api_subagents(self, request: web.Request) -> web.Response:
+        ws_filter = request.query.get("workspace")
+        if self.is_daemon_connected and self.engine_client:
+            kwargs: Dict[str, Any] = {}
+            if ws_filter:
+                kwargs["workspace"] = ws_filter
+            res = await self.engine_client.call_async("get_subagents", **kwargs)
+            return web.json_response(res.get("subagents", []))
+        return web.json_response([])
 
     async def handle_api_history(self, request: web.Request) -> web.Response:
         limit = int(request.query.get("limit", "50"))
