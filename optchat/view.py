@@ -52,6 +52,7 @@ class LiveView:
             else min(VIEW_MIN, budget // 2 if budget < VIEW_MAX else VIEW_MIN)
         )
         self.parts: List[Part] = []
+        self.batch_count: int = 0
         self._settle_event = asyncio.Event()
 
         self.view_path = Path(view_path or (self.storage.chat_dir / "view.json")).resolve()
@@ -162,6 +163,7 @@ class LiveView:
             offer(k)
 
         self.parts = [p for p in view if p is not None]
+        self.batch_count += 1
         self._notify_settle()
 
     def save_view(self, path: Optional[Path] = None) -> None:

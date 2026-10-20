@@ -67,6 +67,13 @@ class OptChatWebServer:
         self.conversation_id: Optional[str] = conversation_id
         self.agy_path = shutil.which("agy") or "/home/simonpure/.local/bin/agy"
 
+        # Session tracking for 'All' (desk) workspace
+        self.all_conversation_id: Optional[str] = None
+        self.all_session_anchor_msg_count: int = -1
+        self.all_session_anchor_batch_count: int = 0
+        self.all_session_turn_count: int = 0
+        self.all_session_last_ts: float = 0.0
+
         self.engine_client: Optional[EngineClient] = None
         self.is_daemon_connected: bool = False
         self.storage: Optional[Any] = None
@@ -546,6 +553,9 @@ class OptChatWebServer:
         if "conversation_id" in data:
             conv_id = data["conversation_id"]
             self.conversation_id = conv_id if conv_id else None
+            self.all_conversation_id = conv_id if conv_id else None
+            self.all_session_turn_count = 0
+            self.all_session_last_ts = time.time()
             if isinstance(self.main_provider, AgyProvider):
                 self.main_provider.conversation_id = self.conversation_id
                 self.main_provider.last_conversation_id = self.conversation_id
@@ -773,6 +783,82 @@ class OptChatWebServer:
         logger.warning("Could not resolve workspace path for '%s'; falling back to %s", ws_name, self.workspace)
         return self.workspace
 
+    def get_current_batch_count(self) -> int:
+        """Get the current batch coarsening count from the LiveView."""
+        if self.view is not None:
+            return getattr(self.view, "batch_count", 0)
+        return 0
+
+    def get_latest_msg_id(self) -> int:
+        """Get the latest message ID in storage."""
+        if self.storage is not None:
+            msgs = getattr(self.storage, "messages", [])
+            return msgs[-1].i if msgs else -1
+        return -1
+
+    def should_continue_all_session(self) -> bool:
+        """Determine whether the 'All' (desk) agy session should continue or start fresh."""
+        if not self.all_conversation_id:
+            return False
+
+        # Invalidation trigger 1: View sawtooth batch coarsening occurred
+        curr_batch = self.get_current_batch_count()
+        if curr_batch > self.all_session_anchor_batch_count:
+            logger.info(
+                "All session invalidated: batch coarsening detected (%d > %d)",
+                curr_batch,
+                self.all_session_anchor_batch_count,
+            )
+            return False
+
+        # Invalidation trigger 2: Session turn ceiling (>= 20 turns)
+        if self.all_session_turn_count >= 20:
+            logger.info("All session invalidated: turn ceiling reached (%d turns)", self.all_session_turn_count)
+            return False
+
+        # Invalidation trigger 3: Inactivity (> 2 hours = 7200 seconds)
+        if self.all_session_last_ts > 0 and (time.time() - self.all_session_last_ts > 7200):
+            logger.info("All session invalidated: session inactive for >2h")
+            return False
+
+        return True
+
+    def get_cross_workspace_delta(self) -> Optional[str]:
+        """Fetch messages logged in other workspaces since the session anchor.
+
+        Formats them into an <optchat_updates> block for delta injection.
+        """
+        if not self.storage or self.all_session_anchor_msg_count < 0:
+            return None
+
+        msgs = getattr(self.storage, "messages", [])
+        if not msgs:
+            return None
+
+        new_cross_msgs: List[Any] = []
+        for m in msgs:
+            if m.i > self.all_session_anchor_msg_count:
+                ws = getattr(m, "workspace", "") or ""
+                if ws and ws not in ("desk", "all"):
+                    new_cross_msgs.append(m)
+
+        if not new_cross_msgs:
+            return None
+
+        lines = [
+            "<optchat_updates>",
+            "Recent updates from other workspaces since last turn:",
+        ]
+        for m in new_cross_msgs[-15:]:
+            ws = getattr(m, "workspace", "unknown")
+            text_snippet = m.text.replace("\n", " ").strip()
+            if len(text_snippet) > 160:
+                text_snippet = text_snippet[:157] + "..."
+            lines.append(f"- [{ws}] {m.kind}: {text_snippet}")
+        lines.append("</optchat_updates>\n")
+
+        return "\n".join(lines)
+
     async def run_workspace_agy_turn(
         self,
         ws_dir: Path,
@@ -780,9 +866,19 @@ class OptChatWebServer:
         message: str,
         req_id: Optional[str] = None,
         model: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        agent: Optional[str] = None,
     ) -> None:
-        """Execute a turn directly in a specific workspace using agy -c simulating CLI behavior."""
-        logger.info("Executing agy -c in workspace '%s' (%s) [req_id=%s, model=%s]", ws_name, ws_dir, req_id, model)
+        """Execute a turn directly in a specific workspace using agy simulating CLI behavior."""
+        logger.info(
+            "Executing agy turn in workspace '%s' (%s) [req_id=%s, model=%s, conv_id=%s, agent=%s]",
+            ws_name,
+            ws_dir,
+            req_id,
+            model,
+            conversation_id,
+            agent,
+        )
 
         extra_info: Dict[str, Any] = {"workspace": ws_name}
         if req_id:
@@ -793,12 +889,25 @@ class OptChatWebServer:
         agy_bin = shutil.which("agy") or "/home/simonpure/.local/bin/agy"
         cmd = [
             agy_bin,
-            "-c",
             "--dangerously-skip-permissions",
             "--disable-slash-commands",
             "--output-format",
             "stream-json",
         ]
+
+        if conversation_id:
+            cmd.extend(["--conversation", conversation_id, "-c"])
+        elif ws_name not in ("all", "desk"):
+            cmd.append("-c")
+
+        agent_name = agent
+        if not agent_name and ws_name in ("all", "desk"):
+            agent_file = ws_dir / ".agents" / "agents" / "orchestrator.md"
+            if agent_file.is_file():
+                agent_name = "orchestrator"
+        if agent_name:
+            cmd.extend(["--agent", agent_name])
+
         selected_model = model or self.model
         if selected_model:
             cmd.extend(["--model", selected_model])
@@ -843,10 +952,26 @@ class OptChatWebServer:
                         continue
                     try:
                         event_data = json.loads(raw)
-                        event_type = event_data.get("event")
+                        event_type = event_data.get("event") or event_data.get("type")
+
+                        # Capture conversation_id if present
+                        cid = (
+                            event_data.get("conversation_id")
+                            or event_data.get("result", {}).get("conversation_id")
+                            or event_data.get("step_update", {}).get("conversation_id")
+                            or event_data.get("init", {}).get("conversation_id")
+                        )
+                        if cid and ws_name in ("all", "desk"):
+                            self.all_conversation_id = cid
+
                         if event_type == "step_update":
                             su = event_data.get("step_update", {})
                             delta = su.get("text_delta")
+                            if delta:
+                                full_response_chunks.append(delta)
+                                self.broadcast_stream_event("text", delta, extra=extra_info)
+                        elif event_type == "text":
+                            delta = event_data.get("content", "")
                             if delta:
                                 full_response_chunks.append(delta)
                                 self.broadcast_stream_event("text", delta, extra=extra_info)
@@ -982,6 +1107,30 @@ class OptChatWebServer:
         if req_model:
             self.model = req_model
 
+        is_all_desk = ws_req in ("all", "desk")
+        effective_message = message
+        target_conversation_id: Optional[str] = None
+
+        if is_all_desk:
+            ws_dir = self.resolve_workspace_dir("desk")
+            if self.should_continue_all_session():
+                delta = self.get_cross_workspace_delta()
+                if delta:
+                    effective_message = f"{delta}\n{message}"
+                target_conversation_id = self.all_conversation_id
+                self.all_session_turn_count += 1
+                self.all_session_last_ts = time.time()
+                self.all_session_anchor_msg_count = self.get_latest_msg_id()
+            else:
+                self.all_conversation_id = None
+                self.all_session_anchor_batch_count = self.get_current_batch_count()
+                self.all_session_turn_count = 1
+                self.all_session_last_ts = time.time()
+                self.all_session_anchor_msg_count = self.get_latest_msg_id()
+                target_conversation_id = None
+        else:
+            ws_dir = self.resolve_workspace_dir(ws_req)
+
         accept = request.headers.get("Accept", "")
         if "text/event-stream" in accept:
             response = web.StreamResponse(
@@ -998,15 +1147,20 @@ class OptChatWebServer:
             queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
             self._active_stream_queues.add(queue)
 
-            if ws_req in ("all", "desk"):
-                assert self.agent is not None
+            if is_all_desk and self.provider_name != "agy" and self.agent is not None:
                 if req_model and self.main_provider:
                     self.main_provider.model = req_model
-                turn_task = asyncio.create_task(self.agent.submit_user_message(message))
+                turn_task = asyncio.create_task(self.agent.submit_user_message(effective_message))
             else:
-                ws_dir = self.resolve_workspace_dir(ws_req)
                 turn_task = asyncio.create_task(
-                    self.run_workspace_agy_turn(ws_dir, ws_req, message, req_id=req_id, model=req_model or self.model)
+                    self.run_workspace_agy_turn(
+                        ws_dir,
+                        ws_req,
+                        effective_message,
+                        req_id=req_id,
+                        model=req_model or self.model,
+                        conversation_id=target_conversation_id,
+                    )
                 )
 
             try:
@@ -1026,15 +1180,20 @@ class OptChatWebServer:
             return response
 
         # Asynchronous submission: queue task immediately and return status
-        if ws_req in ("all", "desk"):
-            assert self.agent is not None
+        if is_all_desk and self.provider_name != "agy" and self.agent is not None:
             if req_model and self.main_provider:
                 self.main_provider.model = req_model
-            asyncio.create_task(self.agent.submit_user_message(message))
+            asyncio.create_task(self.agent.submit_user_message(effective_message))
         else:
-            ws_dir = self.resolve_workspace_dir(ws_req)
             asyncio.create_task(
-                self.run_workspace_agy_turn(ws_dir, ws_req, message, req_id=req_id, model=req_model or self.model)
+                self.run_workspace_agy_turn(
+                    ws_dir,
+                    ws_req,
+                    effective_message,
+                    req_id=req_id,
+                    model=req_model or self.model,
+                    conversation_id=target_conversation_id,
+                )
             )
 
         return web.json_response({

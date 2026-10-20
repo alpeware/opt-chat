@@ -303,3 +303,81 @@ async def test_web_server_telemetry_endpoints(tmp_path: Path):
         server.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_all_session_continuation_and_delta_injection(tmp_path: Path):
+    import time
+    storage_dir = tmp_path / "chat"
+    storage = Storage(storage_dir)
+    storage.open()
+    storage.append_message("user", "Initial turn", workspace="desk")
+    storage.close()
+
+    server = OptChatWebServer(
+        chat_dir=storage_dir,
+        provider_name="mock",
+    )
+    await server.init_engine()
+
+    try:
+        # 1. Initially, no conversation ID -> should_continue_all_session is False
+        assert server.should_continue_all_session() is False
+
+        # Set conversation ID
+        server.all_conversation_id = "conv-desk-1"
+        server.all_session_last_ts = time.time()
+        server.all_session_turn_count = 1
+        server.all_session_anchor_batch_count = 0
+        server.all_session_anchor_msg_count = server.get_latest_msg_id()
+        assert server.should_continue_all_session() is True
+
+        # Invalidation trigger: Sawtooth batch coarsening (batch_count increases)
+        server.view.batch_count = 1
+        assert server.should_continue_all_session() is False
+        server.view.batch_count = 0
+        assert server.should_continue_all_session() is True
+
+        # Invalidation trigger: Turn ceiling (>= 20)
+        server.all_session_turn_count = 20
+        assert server.should_continue_all_session() is False
+        server.all_session_turn_count = 5
+        assert server.should_continue_all_session() is True
+
+        # Invalidation trigger: Inactivity (> 2 hours)
+        server.all_session_last_ts = time.time() - 7205
+        assert server.should_continue_all_session() is False
+        server.all_session_last_ts = time.time()
+        assert server.should_continue_all_session() is True
+
+        # 2. Test cross-workspace delta generation
+        assert server.get_cross_workspace_delta() is None
+
+        # Add message in 'desk' -> delta still None (same workspace)
+        server.storage.append_message("talk", "Internal desk talk", workspace="desk")
+        assert server.get_cross_workspace_delta() is None
+
+        # Add messages in external workspaces
+        server.storage.append_message("note", "Completed SPY backtest: Sharpe 2.4", workspace="jacquard")
+        server.storage.append_message("user", "Submitted Kaggle kernel v54", workspace="gemma-4")
+
+        delta = server.get_cross_workspace_delta()
+        assert delta is not None
+        assert "<optchat_updates>" in delta
+        assert "[jacquard] note: Completed SPY backtest: Sharpe 2.4" in delta
+        assert "[gemma-4] user: Submitted Kaggle kernel v54" in delta
+        assert "</optchat_updates>" in delta
+
+        # 3. Test session reset via /api/session
+        client = TestClient(TestServer(server.app))
+        await client.start_server()
+        try:
+            res_reset = await client.post("/api/session", json={"conversation_id": ""})
+            assert res_reset.status == 200
+            assert server.all_conversation_id is None
+            assert server.should_continue_all_session() is False
+        finally:
+            await client.close()
+    finally:
+        server.shutdown()
+
+
+
