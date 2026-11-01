@@ -42,6 +42,7 @@ class LiveView:
         budget: int = VIEW_MAX,
         min_budget: Optional[int] = None,
         view_path: Optional[Path] = None,
+        enable_maintenance: bool = True,
     ):
         self.storage = storage
         self.budget = budget
@@ -53,7 +54,10 @@ class LiveView:
         )
         self.parts: List[Part] = []
         self.batch_count: int = 0
+        self.enable_maintenance = enable_maintenance
         self._settle_event = asyncio.Event()
+        if not self.enable_maintenance:
+            self._settle_event.set()
 
         self.view_path = Path(view_path or (self.storage.chat_dir / "view.json")).resolve()
         self._compaction_view: Optional[CompactionView] = None
@@ -75,6 +79,9 @@ class LiveView:
         Once the view passes 128,000 bytes, one batch merges the most due
         pairs until it is at most 64,000 bytes.
         """
+        if not self.enable_maintenance:
+            self._settle_event.set()
+            return
         self.parts.append(Part(0, i))
         if self.compute_size() > self.budget:
             self.fit(target=self.min_budget)
@@ -85,6 +92,9 @@ class LiveView:
 
     def on_node_built(self) -> None:
         """Called when any tree node is saved (§5.2)."""
+        if not self.enable_maintenance:
+            self._settle_event.set()
+            return
         if self.compute_size() > self.budget:
             self.fit(target=self.min_budget)
             self.save_view()
@@ -98,6 +108,8 @@ class LiveView:
             d = (T + 1) / 2^l - i
         where T is the view's end message index (UniiChat §3.2).
         """
+        if not self.enable_maintenance:
+            return
         limit = target if target is not None else self.budget
         if not self.parts:
             return
@@ -204,6 +216,11 @@ class LiveView:
 
     def rebuild(self) -> None:
         """Reconstruct view at startup. Loads view.json if present, catching up to new messages."""
+        if not self.enable_maintenance:
+            self.load_view()
+            self._settle_event.set()
+            return
+
         total = len(self.storage.messages)
         if self.load_view():
             changed = False
@@ -238,6 +255,8 @@ class LiveView:
 
     def is_settled(self) -> bool:
         """Check if all parts in the view have their summaries built (§6)."""
+        if not self.enable_maintenance:
+            return True
         for part in self.parts:
             if not self.storage.has_node(part.l, part.i):
                 return False
@@ -248,7 +267,7 @@ class LiveView:
 
         Returns True if settled, False if aborted or timed out.
         """
-        if self.is_settled():
+        if not self.enable_maintenance or self.is_settled():
             return True
 
         loop = asyncio.get_running_loop()

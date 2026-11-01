@@ -394,6 +394,8 @@ class OptChatDaemon:
         web_port: int = 8765,
         web_host: str = "0.0.0.0",
         workspace: Optional[Path] = None,
+        enable_compaction: Optional[bool] = None,
+        enable_tree_maintenance: Optional[bool] = None,
     ):
         self.chat_dir = Path(chat_dir or os.path.expanduser("~/.optchat")).resolve()
         self.socket_path = Path(socket_path or (self.chat_dir / "engine.sock")).resolve()
@@ -407,6 +409,24 @@ class OptChatDaemon:
         self.web_process: Optional[asyncio.subprocess.Process] = None
         self._web_monitor_task: Optional[asyncio.Task] = None
         self._skip_execv_for_test: bool = False
+
+        # Read compaction and tree_maintenance defaults from config.json if present
+        cfg_path = self.chat_dir / "config.json"
+        cfg_compaction = True
+        cfg_tree = True
+        if cfg_path.is_file():
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg_data = json.load(f)
+                    if "compaction" in cfg_data:
+                        cfg_compaction = bool(cfg_data["compaction"])
+                    if "tree_maintenance" in cfg_data:
+                        cfg_tree = bool(cfg_data["tree_maintenance"])
+            except Exception:
+                pass
+
+        self.enable_compaction = cfg_compaction if enable_compaction is None else enable_compaction
+        self.enable_tree_maintenance = cfg_tree if enable_tree_maintenance is None else enable_tree_maintenance
 
         from optchat.sandbox import SandboxManager, SandboxBackend
         self.sandbox_backend = SandboxManager.detect_backend(sandbox)
@@ -628,20 +648,27 @@ class OptChatDaemon:
         self.storage = Storage(self.chat_dir)
         self.storage.open()
 
-        self.view = LiveView(self.storage)
-        self.view.rebuild()
+        self.view = LiveView(self.storage, enable_maintenance=self.enable_tree_maintenance)
+        if self.enable_tree_maintenance:
+            self.view.rebuild()
+        else:
+            self.view.load_view()
 
         from optchat.sandbox import SandboxBackend
         if self.sandbox_backend != SandboxBackend.NONE:
             logger.info("OptChat Daemon active with sandbox: %s", self.sandbox_backend.value)
 
-        comp_provider = create_provider(
-            self.provider_name,
-            model=self.compactor_model or "gemini-3.8-flash-low",
-            compact_model=self.compactor_model or "gemini-3.8-flash-low",
-        )
-        self.compactor = Compactor(self.storage, self.view, comp_provider)
-        self.compactor.start()
+        if self.enable_compaction:
+            comp_provider = create_provider(
+                self.provider_name,
+                model=self.compactor_model or "gemini-3.8-flash-low",
+                compact_model=self.compactor_model or "gemini-3.8-flash-low",
+            )
+            self.compactor = Compactor(self.storage, self.view, comp_provider)
+            self.compactor.start()
+        else:
+            logger.info("OptChat Compactor disabled.")
+            self.compactor = None
 
         # Remove stale socket if present
         if self.socket_path.exists():
@@ -860,6 +887,8 @@ class OptChatDaemon:
                 "view_size": size,
                 "view_budget": self.view.budget,
                 "is_settled": self.view.is_settled(),
+                "compaction_enabled": self.enable_compaction,
+                "tree_maintenance_enabled": self.enable_tree_maintenance,
                 "web_server": web_info,
                 "workspaces": sorted(list(known_workspaces)),
                 "active_subagents_count": len(self._active_subagents),
@@ -1688,6 +1717,8 @@ async def run_daemon(
     web_host: str = "0.0.0.0",
     web_port: int = 8765,
     workspace: Optional[Path] = None,
+    enable_compaction: Optional[bool] = None,
+    enable_tree_maintenance: Optional[bool] = None,
 ) -> None:
     daemon = OptChatDaemon(
         chat_dir=chat_dir,
@@ -1699,6 +1730,8 @@ async def run_daemon(
         web_host=web_host,
         web_port=web_port,
         workspace=workspace,
+        enable_compaction=enable_compaction,
+        enable_tree_maintenance=enable_tree_maintenance,
     )
     await daemon.start()
 

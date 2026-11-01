@@ -200,6 +200,8 @@ def main() -> None:
     daemon_parser.add_argument("--web-host", default="0.0.0.0", help="Host interface for managed web server (default: 0.0.0.0)")
     daemon_parser.add_argument("--web-port", type=int, default=8765, help="Port for managed web server (default: 8765)")
     daemon_parser.add_argument("--workspace", default=None, help="Workspace directory for web server / agy execution")
+    daemon_parser.add_argument("--no-compaction", "--disable-compaction", dest="disable_compaction", action="store_true", help="Disable background compactor worker")
+    daemon_parser.add_argument("--no-tree-maintenance", "--disable-tree-maintenance", dest="disable_tree_maintenance", action="store_true", help="Disable summary tree maintenance")
 
     # update command
     update_parser = subparsers.add_parser("update", help="Self-update optchat via git pull, reinstall package, and restart daemon & web server")
@@ -471,6 +473,11 @@ def main() -> None:
             console.print(f"  • Tree Nodes:  {st.get('tree_nodes_count', 0)}")
             console.print(f"  • View Size:   {size} / {budget} bytes ({pct}%)")
             console.print(f"  • Settled:     {st.get('is_settled', True)}")
+            if "compaction_enabled" in st:
+                c_status = "[green]enabled[/green]" if st.get("compaction_enabled") else "[yellow]disabled[/yellow]"
+                t_status = "[green]enabled[/green]" if st.get("tree_maintenance_enabled") else "[yellow]disabled[/yellow]"
+                console.print(f"  • Compaction:  {c_status}")
+                console.print(f"  • Tree Maint:  {t_status}")
             if web_info and web_info.get("enabled"):
                 web_status = "[green]running[/green]" if web_info.get("running") else "[red]stopped[/red]"
                 console.print(f"  • Web Server:  {web_status} on http://{web_info.get('host')}:{web_info.get('port')} (PID {web_info.get('pid')})")
@@ -688,6 +695,8 @@ def main() -> None:
                 web_host=getattr(args, "web_host", "0.0.0.0"),
                 web_port=getattr(args, "web_port", 8765),
                 workspace=ws,
+                enable_compaction=False if getattr(args, "disable_compaction", False) else None,
+                enable_tree_maintenance=False if getattr(args, "disable_tree_maintenance", False) else None,
             )
         )
 

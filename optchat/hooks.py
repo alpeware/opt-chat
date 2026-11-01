@@ -114,24 +114,10 @@ def handle_hook_command(event_name: str) -> None:
     client = EngineClient()
 
     if event_normalized == "pre_invocation":
-        # PreInvocation hook: inject latest compressed memory view into agent prompt
-        response: Dict[str, Any] = {"injectSteps": []}
-        try:
-            if client.is_daemon_alive(timeout=0.5):
-                view_res = client.call("get_view", timeout=1.0)
-                view_text = view_res.get("view", "").strip()
-                if view_text:
-                    memory_notice = (
-                        "=== OPTCHAT ENDLESS MEMORY TREE ===\n"
-                        f"{view_text}\n"
-                        "=== END MEMORY (Use optchat MCP tools to zoom or date) ==="
-                    )
-                    response["injectSteps"].append({"ephemeralMessage": memory_notice})
-        except Exception as e:
-            logger.debug("Failed to query daemon in pre-invocation hook: %s", e)
-
-        sys.stdout.write(json.dumps(response) + "\n")
+        # PreInvocation hook: message injection disabled per configuration
+        sys.stdout.write(json.dumps({"injectSteps": []}) + "\n")
         sys.stdout.flush()
+        return
 
     elif event_normalized == "pre_tool":
         # PreToolUse hook (fires for invoke_subagent)
