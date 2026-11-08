@@ -215,12 +215,15 @@ class EngineClient:
         limit: int = 30,
         workspace: Optional[str] = None,
         category: Optional[str] = None,
+        kind: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         kwargs: Dict[str, Any] = {"limit": limit}
         if workspace:
             kwargs["workspace"] = workspace
         if category:
             kwargs["category"] = category
+        if kind:
+            kwargs["kind"] = kind
         res = self.call("get_history", **kwargs)
         return res.get("messages", [])
 
@@ -229,12 +232,15 @@ class EngineClient:
         limit: int = 30,
         workspace: Optional[str] = None,
         category: Optional[str] = None,
+        kind: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         kwargs: Dict[str, Any] = {"limit": limit}
         if workspace:
             kwargs["workspace"] = workspace
         if category:
             kwargs["category"] = category
+        if kind:
+            kwargs["kind"] = kind
         res = await self.call_async("get_history", **kwargs)
         return res.get("messages", [])
 

@@ -947,6 +947,7 @@ class OptChatDaemon:
             limit = int(req.get("limit", 30))
             ws_filter = req.get("workspace")
             category_filter = req.get("category")
+            kind_filter = req.get("kind")
             msgs = self.storage.messages if self.storage.messages else []
 
             if ws_filter and ws_filter.lower() != "all":
@@ -956,6 +957,10 @@ class OptChatDaemon:
                     if (m.workspace and m.workspace.lower() == ws_target)
                     or (not m.workspace and m.text.strip().lower().startswith(f"[{ws_target}]"))
                 ]
+
+            if kind_filter and kind_filter.lower() != "all":
+                k_target = kind_filter.lower()
+                msgs = [m for m in msgs if m.kind == k_target]
 
             if category_filter and category_filter.lower() != "all":
                 cat = category_filter.lower()

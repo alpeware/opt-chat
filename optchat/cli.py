@@ -313,9 +313,10 @@ def main() -> None:
 
     # history command
     history_parser = subparsers.add_parser("history", help="Show recent message history")
-    history_parser.add_argument("--limit", type=int, default=20, help="Number of messages to display (default: 20)")
+    history_parser.add_argument("--limit", "-n", type=int, default=20, help="Number of messages to display (default: 20)")
     history_parser.add_argument("--kind", default=None, choices=["note", "user", "talk", "work"], help="Filter by message kind")
     history_parser.add_argument("--workspace", "-w", default=None, help="Filter messages for a specific workspace (e.g. opt-chat)")
+    history_parser.add_argument("--json", "-j", action="store_true", help="Output messages as JSON array (with full untruncated text)")
     history_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
 
     # device command
@@ -504,7 +505,7 @@ def main() -> None:
         client = EngineClient(socket_path=chat_dir / "engine.sock")
         ws_name = getattr(args, "workspace", None)
         if client.is_daemon_alive():
-            msgs = client.get_history(limit=args.limit, workspace=ws_name)
+            msgs = client.get_history(limit=args.limit, workspace=ws_name, kind=args.kind)
         else:
             storage = Storage(chat_dir)
             storage.open(acquire_lock=False)
@@ -517,6 +518,8 @@ def main() -> None:
                         if (m.workspace and m.workspace.lower() == ws_target)
                         or (not m.workspace and m.text.strip().lower().startswith(f"[{ws_target}]"))
                     ]
+                if args.kind:
+                    storage_msgs = [m for m in storage_msgs if m.kind == args.kind]
                 msgs = [
                     {
                         "i": m.i,
@@ -524,6 +527,8 @@ def main() -> None:
                         "text": m.text,
                         "size": m.size,
                         "date": m.date,
+                        "workspace": m.workspace,
+                        "device": m.device,
                     }
                     for m in storage_msgs[-args.limit:]
                 ]
@@ -533,7 +538,10 @@ def main() -> None:
         if args.kind:
             msgs = [m for m in msgs if m.get("kind") == args.kind]
 
-        if not msgs:
+        if getattr(args, "json", False):
+            sys.stdout.write(json.dumps(msgs, indent=2, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+        elif not msgs:
             console.print(f"[yellow]No messages found.[/yellow]")
         else:
             console.print(f"[bold cyan]Recent Messages (showing {len(msgs)}):[/bold cyan]")

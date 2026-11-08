@@ -1,5 +1,6 @@
 """Tests for CLI memory commands: view, zoom, date, log, stats, history."""
 
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -56,6 +57,21 @@ def test_cli_memory_offline(tmp_path: Path):
     assert "Recent Messages" in res.stdout
     assert "Hello world from test" in res.stdout
     assert "Key decision: testing offline CLI commands" in res.stdout
+
+    # 5b. history --json
+    res_json = run_cli("history", "--json", "--limit", "1", "--chat-dir", str(chat_dir))
+    assert res_json.returncode == 0
+    data = json.loads(res_json.stdout)
+    assert isinstance(data, list)
+    assert len(data) == 1
+    assert data[0]["kind"] == "note"
+    assert data[0]["text"] == "Key decision: testing offline CLI commands"
+    assert "device" in data[0]
+
+    # 5c. history --json when empty
+    res_empty = run_cli("history", "--json", "--workspace", "nonexistent", "--chat-dir", str(chat_dir))
+    assert res_empty.returncode == 0
+    assert json.loads(res_empty.stdout) == []
 
     # 6. log
     res = run_cli("log", "Third message via CLI", "--kind", "talk", "--chat-dir", str(chat_dir))
@@ -120,6 +136,15 @@ def test_cli_memory_with_daemon(tmp_path: Path):
         assert res_ws.returncode == 0
         assert "Fix bug in parser" in res_ws.stdout
         assert "Update landing page hero" not in res_ws.stdout
+
+        # 8. history --json with workspace and kind filter via daemon
+        res_ws_json = run_cli("history", "--workspace", "opt-chat", "--kind", "talk", "--json", "--chat-dir", str(chat_dir))
+        assert res_ws_json.returncode == 0
+        ws_data = json.loads(res_ws_json.stdout)
+        assert isinstance(ws_data, list)
+        assert len(ws_data) == 1
+        assert ws_data[0]["kind"] == "talk"
+        assert "Fix bug in parser" in ws_data[0]["text"]
 
         res_view_ws = run_cli("view", "--workspace", "opt-chat", "--chat-dir", str(chat_dir))
         assert res_view_ws.returncode == 0
