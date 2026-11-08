@@ -316,6 +316,8 @@ def main() -> None:
     history_parser.add_argument("--limit", "-n", type=int, default=20, help="Number of messages to display (default: 20)")
     history_parser.add_argument("--kind", default=None, choices=["note", "user", "talk", "work"], help="Filter by message kind")
     history_parser.add_argument("--workspace", "-w", default=None, help="Filter messages for a specific workspace (e.g. opt-chat)")
+    history_parser.add_argument("--device", "-d", default=None, help="Filter messages by device name (e.g. ultimatebeast, slimbeast)")
+    history_parser.add_argument("--since", "-s", default=None, help="Filter messages since message ID (e.g. 4500 or #4500), duration (e.g. 2h, 1d), 'today', 'yesterday', or ISO date/timestamp")
     history_parser.add_argument("--json", "-j", action="store_true", help="Output messages as JSON array (with full untruncated text)")
     history_parser.add_argument("--chat-dir", default=default_chat_dir, help=f"Path to chat directory (default: {default_chat_dir})")
 
@@ -501,11 +503,20 @@ def main() -> None:
 
     elif args.subcommand == "history":
         from optchat.engine_client import EngineClient
+        from optchat.storage import matches_since_filter
         chat_dir = Path(args.chat_dir)
         client = EngineClient(socket_path=chat_dir / "engine.sock")
         ws_name = getattr(args, "workspace", None)
+        dev_name = getattr(args, "device", None)
+        since_val = getattr(args, "since", None)
         if client.is_daemon_alive():
-            msgs = client.get_history(limit=args.limit, workspace=ws_name, kind=args.kind)
+            msgs = client.get_history(
+                limit=args.limit,
+                workspace=ws_name,
+                kind=args.kind,
+                device=dev_name,
+                since=since_val,
+            )
         else:
             storage = Storage(chat_dir)
             storage.open(acquire_lock=False)
@@ -517,6 +528,17 @@ def main() -> None:
                         m for m in storage_msgs
                         if (m.workspace and m.workspace.lower() == ws_target)
                         or (not m.workspace and m.text.strip().lower().startswith(f"[{ws_target}]"))
+                    ]
+                if dev_name and dev_name.lower() != "all":
+                    dev_target = dev_name.lower()
+                    storage_msgs = [
+                        m for m in storage_msgs
+                        if m.device and m.device.lower() == dev_target
+                    ]
+                if since_val is not None and str(since_val).strip():
+                    storage_msgs = [
+                        m for m in storage_msgs
+                        if matches_since_filter(m.i, m.date, since_val)
                     ]
                 if args.kind:
                     storage_msgs = [m for m in storage_msgs if m.kind == args.kind]
@@ -537,6 +559,14 @@ def main() -> None:
 
         if args.kind:
             msgs = [m for m in msgs if m.get("kind") == args.kind]
+        if dev_name and dev_name.lower() != "all":
+            dev_target = dev_name.lower()
+            msgs = [m for m in msgs if m.get("device") and str(m.get("device")).lower() == dev_target]
+        if since_val is not None and str(since_val).strip():
+            msgs = [
+                m for m in msgs
+                if matches_since_filter(int(m.get("i", 0)), str(m.get("date", "")), since_val)
+            ]
 
         if getattr(args, "json", False):
             sys.stdout.write(json.dumps(msgs, indent=2, ensure_ascii=False) + "\n")

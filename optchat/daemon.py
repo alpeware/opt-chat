@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Set
 from optchat.compactor import Compactor
 from optchat.constants import VIEW
 from optchat.providers import create_provider
-from optchat.storage import Message, Storage, is_valid_workspace_name
+from optchat.storage import Message, Storage, is_valid_workspace_name, matches_since_filter
 from optchat.telemetry import TelemetryStore, estimate_cost_usd
 from optchat.tree import node_coords
 from optchat.view import LiveView
@@ -948,6 +948,8 @@ class OptChatDaemon:
             ws_filter = req.get("workspace")
             category_filter = req.get("category")
             kind_filter = req.get("kind")
+            device_filter = req.get("device")
+            since_filter = req.get("since")
             msgs = self.storage.messages if self.storage.messages else []
 
             if ws_filter and ws_filter.lower() != "all":
@@ -957,6 +959,13 @@ class OptChatDaemon:
                     if (m.workspace and m.workspace.lower() == ws_target)
                     or (not m.workspace and m.text.strip().lower().startswith(f"[{ws_target}]"))
                 ]
+
+            if device_filter and device_filter.lower() != "all":
+                dev_target = device_filter.lower()
+                msgs = [m for m in msgs if m.device and m.device.lower() == dev_target]
+
+            if since_filter is not None and str(since_filter).strip():
+                msgs = [m for m in msgs if matches_since_filter(m.i, m.date, since_filter)]
 
             if kind_filter and kind_filter.lower() != "all":
                 k_target = kind_filter.lower()

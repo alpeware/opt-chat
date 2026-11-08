@@ -67,6 +67,84 @@ def get_device_name_info(cfg_path: Optional[Path] = None) -> Tuple[str, str]:
         return "node", "fallback"
 
 
+def matches_since_filter(msg_i: int, msg_date: str, since: Any) -> bool:
+    """Return True if message (msg_i, msg_date) satisfies the `since` filter.
+
+    Supports:
+    - Message ID: integer or '#123' / '123' (returns messages with i >= since_id)
+    - Relative duration: e.g. '30m', '2h', '1d', '1w', '45s'
+    - Special keywords: 'today', 'yesterday'
+    - Date or ISO-8601 timestamp prefix/value: e.g. '2026-11-08' or '2026-11-08T13:00:00'
+    """
+    if since is None:
+        return True
+    s = str(since).strip()
+    if not s:
+        return True
+
+    # 1. Message ID: '#123' or pure digits (not 8-digit YYYYMMDD)
+    id_str = s[1:].strip() if s.startswith("#") else s
+    if id_str.isdigit() and (s.startswith("#") or len(id_str) != 8):
+        return int(msg_i) >= int(id_str)
+
+    now = datetime.datetime.now().astimezone()
+    s_lower = s.lower()
+
+    # 2. Keywords: today / yesterday
+    cutoff_dt: Optional[datetime.datetime] = None
+    if s_lower == "today":
+        cutoff_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif s_lower == "yesterday":
+        cutoff_dt = (now - datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        # 3. Relative duration: e.g. 30m, 2h, 1d, 2w, 1.5h
+        m_rel = re.match(
+            r"^(\d+(?:\.\d+)?)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)$",
+            s_lower,
+        )
+        if m_rel:
+            val = float(m_rel.group(1))
+            unit = m_rel.group(2)[0]
+            if unit == "s":
+                cutoff_dt = now - datetime.timedelta(seconds=val)
+            elif unit == "m":
+                cutoff_dt = now - datetime.timedelta(minutes=val)
+            elif unit == "h":
+                cutoff_dt = now - datetime.timedelta(hours=val)
+            elif unit == "d":
+                cutoff_dt = now - datetime.timedelta(days=val)
+            elif unit == "w":
+                cutoff_dt = now - datetime.timedelta(weeks=val)
+        else:
+            # 4. ISO date / datetime string
+            try:
+                norm_s = s.replace("Z", "+00:00")
+                if len(norm_s) == 10 and norm_s[4] == "-" and norm_s[7] == "-":
+                    d_parsed = datetime.date.fromisoformat(norm_s)
+                    cutoff_dt = datetime.datetime(
+                        d_parsed.year, d_parsed.month, d_parsed.day, tzinfo=now.tzinfo
+                    )
+                else:
+                    parsed = datetime.datetime.fromisoformat(norm_s)
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=now.tzinfo)
+                    cutoff_dt = parsed
+            except Exception:
+                # Fallback to lexicographical string comparison on date prefix
+                return str(msg_date) >= s
+
+    if cutoff_dt is not None:
+        try:
+            m_dt = datetime.datetime.fromisoformat(str(msg_date).replace("Z", "+00:00"))
+            if m_dt.tzinfo is None:
+                m_dt = m_dt.replace(tzinfo=now.tzinfo)
+            return m_dt >= cutoff_dt
+        except Exception:
+            return str(msg_date) >= cutoff_dt.isoformat()
+
+    return True
+
+
 def is_valid_workspace_name(name: Any) -> bool:
     """Validate that a workspace label is a valid directory name, not a file or generic word."""
     if not name or not isinstance(name, str):

@@ -22,8 +22,8 @@ def test_cli_memory_offline(tmp_path: Path):
     chat_dir = tmp_path / "chat"
     storage = Storage(chat_dir)
     storage.open()
-    storage.append_message("user", "Hello world from test")
-    storage.append_message("note", "Key decision: testing offline CLI commands")
+    storage.append_message("user", "Hello world from test", device="laptop")
+    storage.append_message("note", "Key decision: testing offline CLI commands", device="desktop")
     view = LiveView(storage)
     view.rebuild()
     storage.close()
@@ -72,6 +72,29 @@ def test_cli_memory_offline(tmp_path: Path):
     res_empty = run_cli("history", "--json", "--workspace", "nonexistent", "--chat-dir", str(chat_dir))
     assert res_empty.returncode == 0
     assert json.loads(res_empty.stdout) == []
+
+    # 5d. history --device filter (offline)
+    res_dev = run_cli("history", "--device", "laptop", "--json", "--chat-dir", str(chat_dir))
+    assert res_dev.returncode == 0
+    dev_data = json.loads(res_dev.stdout)
+    assert len(dev_data) == 1
+    assert dev_data[0]["device"] == "laptop"
+    assert dev_data[0]["text"] == "Hello world from test"
+
+    # 5e. history --since filter (offline: message ID, relative duration, keyword)
+    res_since_id = run_cli("history", "--since", "1", "--json", "--chat-dir", str(chat_dir))
+    assert res_since_id.returncode == 0
+    since_id_data = json.loads(res_since_id.stdout)
+    assert len(since_id_data) == 1
+    assert since_id_data[0]["i"] == 1
+
+    res_since_rel = run_cli("history", "--since", "1h", "--json", "--chat-dir", str(chat_dir))
+    assert res_since_rel.returncode == 0
+    assert len(json.loads(res_since_rel.stdout)) == 2
+
+    res_since_future = run_cli("history", "--since", "2099-01-01", "--json", "--chat-dir", str(chat_dir))
+    assert res_since_future.returncode == 0
+    assert json.loads(res_since_future.stdout) == []
 
     # 6. log
     res = run_cli("log", "Third message via CLI", "--kind", "talk", "--chat-dir", str(chat_dir))
@@ -145,6 +168,25 @@ def test_cli_memory_with_daemon(tmp_path: Path):
         assert len(ws_data) == 1
         assert ws_data[0]["kind"] == "talk"
         assert "Fix bug in parser" in ws_data[0]["text"]
+
+        # 9. history --device filter via daemon
+        from optchat.engine_client import EngineClient
+        client = EngineClient(socket_path=sock_path)
+        client.append_message("note", "Note from remote phone", workspace="opt-chat", device="phone")
+        res_dev_daemon = run_cli("history", "--device", "phone", "--json", "--chat-dir", str(chat_dir))
+        assert res_dev_daemon.returncode == 0
+        dev_daemon_data = json.loads(res_dev_daemon.stdout)
+        assert len(dev_daemon_data) == 1
+        assert dev_daemon_data[0]["device"] == "phone"
+        assert dev_daemon_data[0]["text"] == "Note from remote phone"
+
+        # 10. history --since filter via daemon
+        res_since_daemon = run_cli("history", "--since", "#3", "--json", "--chat-dir", str(chat_dir))
+        assert res_since_daemon.returncode == 0
+        since_daemon_data = json.loads(res_since_daemon.stdout)
+        assert len(since_daemon_data) == 1
+        assert since_daemon_data[0]["i"] == 3
+        assert since_daemon_data[0]["text"] == "Note from remote phone"
 
         res_view_ws = run_cli("view", "--workspace", "opt-chat", "--chat-dir", str(chat_dir))
         assert res_view_ws.returncode == 0

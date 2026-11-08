@@ -216,6 +216,8 @@ class EngineClient:
         workspace: Optional[str] = None,
         category: Optional[str] = None,
         kind: Optional[str] = None,
+        device: Optional[str] = None,
+        since: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         kwargs: Dict[str, Any] = {"limit": limit}
         if workspace:
@@ -224,6 +226,10 @@ class EngineClient:
             kwargs["category"] = category
         if kind:
             kwargs["kind"] = kind
+        if device:
+            kwargs["device"] = device
+        if since is not None:
+            kwargs["since"] = since
         res = self.call("get_history", **kwargs)
         return res.get("messages", [])
 
@@ -233,6 +239,8 @@ class EngineClient:
         workspace: Optional[str] = None,
         category: Optional[str] = None,
         kind: Optional[str] = None,
+        device: Optional[str] = None,
+        since: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         kwargs: Dict[str, Any] = {"limit": limit}
         if workspace:
@@ -241,6 +249,10 @@ class EngineClient:
             kwargs["category"] = category
         if kind:
             kwargs["kind"] = kind
+        if device:
+            kwargs["device"] = device
+        if since is not None:
+            kwargs["since"] = since
         res = await self.call_async("get_history", **kwargs)
         return res.get("messages", [])
 
