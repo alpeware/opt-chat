@@ -8,6 +8,7 @@ Antigravity Hooks, MCP).
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import logging
 import os
@@ -16,13 +17,13 @@ import re
 import signal
 import sys
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from optchat.compactor import Compactor
 from optchat.constants import VIEW
 from optchat.providers import create_provider
 from optchat.storage import Message, Storage, is_valid_workspace_name, matches_since_filter
-from optchat.telemetry import TelemetryStore, estimate_cost_usd
+from optchat.telemetry import TelemetryStore, estimate_cost_usd, normalize_model_name
 from optchat.tree import node_coords
 from optchat.view import LiveView
 from optchat.visualizer import export_html_to_file
@@ -108,13 +109,88 @@ def get_agy_default_model() -> str:
             with open(settings_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
                 if cfg.get("model"):
-                    return str(cfg.get("model"))
+                    return normalize_model_name(str(cfg.get("model")))
     except Exception:
         pass
-    return "Gemini 4 Argon (Medium)"
+    return "gemini-4-argon-medium"
 
 
-def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[str, Any]]:
+def resolve_turn_model(
+    payload: Optional[Dict[str, Any]] = None,
+    sub_info: Optional[Dict[str, Any]] = None,
+    role: Optional[str] = None,
+    type_name: Optional[str] = None,
+    desc_data: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Resolve canonical model name from hook payload, subagent descriptor/role, or settings."""
+    payload = payload or {}
+    sub_info = sub_info or {}
+
+    # 1. Check explicit model mentions in subagent role or type_name (e.g. 'Claude Opus 5.5 ...', 'Gemini 4 Carbon ...', 'Gemini 4 Hydrogen ...')
+    role_str = f"{role or ''} {type_name or ''} {sub_info.get('role', '')} {sub_info.get('typeName', '')}".lower()
+    if desc_data and isinstance(desc_data, dict):
+        d_sub = desc_data.get("subagentDescriptor", {})
+        role_str += f" {d_sub.get('role', '')} {d_sub.get('typeName', '')}".lower()
+
+    if "opus" in role_str:
+        return "claude-opus-5-5-high"
+    if "sonnet" in role_str:
+        return "claude-sonnet-5-5-high"
+    if "carbon" in role_str:
+        return "gemini-4-carbon-high"
+    if "hydrogen" in role_str:
+        if "xhigh" in role_str:
+            return "gemini-4-hydrogen-xhigh"
+        if "medium" in role_str:
+            return "gemini-4-hydrogen-medium"
+        if "low" in role_str:
+            return "gemini-4-hydrogen-low"
+        return "gemini-4-hydrogen-high"
+    if "argon" in role_str:
+        if "high" in role_str:
+            return "gemini-4-argon-high"
+        if "low" in role_str:
+            return "gemini-4-argon-low"
+        return "gemini-4-argon-medium"
+    if "3.8" in role_str:
+        if "high" in role_str:
+            return "gemini-3.8-flash-high"
+        if "low" in role_str:
+            return "gemini-3.8-flash-low"
+        return "gemini-3.8-flash-medium"
+
+    # 2. Check invoke_subagent Model tier if recorded in sub_info
+    sub_model_tier = str(sub_info.get("model") or "").strip("\"'").lower()
+    if sub_model_tier in ("flash", "flash_lite"):
+        return "gemini-4-hydrogen-high"
+    if sub_model_tier == "pro":
+        return "gemini-4-carbon-high"
+    if sub_model_tier and sub_model_tier not in ("inherit", "auto", "default", "unknown"):
+        return normalize_model_name(sub_model_tier)
+
+    # 3. Check HookArgsCommon modelName / model_name / model from payload
+    raw_model = (
+        payload.get("modelName")
+        or payload.get("model_name")
+        or payload.get("model")
+        or ""
+    )
+    if isinstance(raw_model, str):
+        clean_raw = raw_model.strip().lower()
+        if clean_raw and clean_raw not in ("auto", "inherit", "default", "unknown"):
+            if clean_raw in ("flash", "flash_lite"):
+                return "gemini-4-hydrogen-high"
+            if clean_raw == "pro":
+                return "gemini-4-carbon-high"
+            return normalize_model_name(raw_model)
+
+    return get_agy_default_model()
+
+
+def extract_latest_turn_from_transcript(
+    transcript_path: str,
+    min_step_index: int = -1,
+) -> Optional[Dict[str, Any]]:
     """Scan transcript.jsonl backwards to find the most recent completed turn (prompt + reply)."""
     from optchat.importer import extract_user_text
     if not transcript_path or not os.path.isfile(transcript_path):
@@ -145,6 +221,10 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
             except Exception:
                 continue
 
+            step_idx = data.get("step_index", 0)
+            if min_step_index >= 0 and isinstance(step_idx, int) and step_idx <= min_step_index:
+                break
+
             stype = data.get("type")
             content = data.get("content", "")
 
@@ -152,7 +232,7 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
             if last_reply is None and stype == "PLANNER_RESPONSE":
                 if content and content.strip():
                     last_reply = content.strip()
-                    last_reply_idx = data.get("step_index", 0)
+                    last_reply_idx = step_idx
                     end_ts_str = data.get("created_at") or data.get("timestamp")
                     total_input_tokens += data.get("input_tokens", 0)
                     total_output_tokens += data.get("output_tokens", 0)
@@ -161,6 +241,10 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
             # 2. Once reply is found, walk backwards until we find what triggered this turn
             elif last_reply is not None:
                 if stype == "PLANNER_RESPONSE":
+                    if content and content.strip():
+                        # Hit previous turn's text reply without finding an explicit user input
+                        start_ts_str = data.get("created_at") or data.get("timestamp")
+                        break
                     total_input_tokens += data.get("input_tokens", 0)
                     total_output_tokens += data.get("output_tokens", 0)
                     total_cache_tokens += data.get("cache_read_tokens", 0)
@@ -176,16 +260,10 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
                     break
                 elif stype == "SYSTEM_MESSAGE":
                     system_messages.append((content, data.get("created_at") or data.get("timestamp")))
-                elif stype == "PLANNER_RESPONSE" and content and content.strip():
-                    # Hit previous turn's text reply without finding an explicit user input
-                    start_ts_str = data.get("created_at") or data.get("timestamp")
-                    break
 
         if last_reply is not None and last_user is None:
             # No USER_INPUT found in this turn; check system messages or fallback to autonomous
             if system_messages:
-                # Prefer high-level timer/cron/notification prompts over raw task completions
-                # Note: system_messages were collected walking backwards (most recent first)
                 chosen_sys = None
                 for sm, ts in reversed(system_messages):  # check chronologically (earliest first)
                     parsed = parse_system_message_prompt(sm)
@@ -195,7 +273,6 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
                             start_ts_str = ts
                         break
                 if not chosen_sys:
-                    # Fallback to the earliest system message in this turn
                     chosen_sys = parse_system_message_prompt(system_messages[-1][0])
                     if not start_ts_str:
                         start_ts_str = system_messages[-1][1]
@@ -229,9 +306,12 @@ def extract_latest_turn_from_transcript(transcript_path: str) -> Optional[Dict[s
     return None
 
 
-def extract_cumulative_tokens_from_transcript(transcript_path: str) -> Dict[str, int]:
-    """Sum all input, output, and cache_read tokens across all PLANNER_RESPONSE steps."""
-    res = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
+def extract_cumulative_tokens_from_transcript(
+    transcript_path: str,
+    min_step_index: int = -1,
+) -> Dict[str, int]:
+    """Sum input, output, and cache_read tokens across PLANNER_RESPONSE steps after min_step_index."""
+    res = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "max_step_index": min_step_index}
     if not transcript_path or not os.path.isfile(transcript_path):
         return res
     try:
@@ -243,14 +323,66 @@ def extract_cumulative_tokens_from_transcript(transcript_path: str) -> Dict[str,
                 try:
                     data = json.loads(stripped)
                     if data.get("type") == "PLANNER_RESPONSE":
+                        s_idx = data.get("step_index", 0)
+                        if min_step_index >= 0 and isinstance(s_idx, int) and s_idx <= min_step_index:
+                            continue
                         res["input_tokens"] += data.get("input_tokens", 0)
                         res["output_tokens"] += data.get("output_tokens", 0)
                         res["cache_read_tokens"] += data.get("cache_read_tokens", 0)
+                        if isinstance(s_idx, int) and s_idx > res["max_step_index"]:
+                            res["max_step_index"] = s_idx
                 except Exception:
                     continue
     except Exception as e:
         logger.debug("Failed reading subagent transcript %s: %s", transcript_path, e)
     return res
+
+
+def _is_internal_or_temp_path(path_str: str) -> bool:
+    """Return True if path_str points inside ~/.gemini, ~/.optchat, /tmp (non-test), or synthetic dirs."""
+    if not path_str:
+        return True
+    norm = path_str.replace("file://", "").strip()
+    if (
+        (norm.startswith("/tmp") and "pytest" not in norm and "test" not in norm)
+        or "/.gemini/" in norm
+        or norm.endswith("/.gemini")
+        or "/.optchat/" in norm
+        or norm.endswith("/.optchat")
+        or "agy_isolated" in norm
+        or "compactor_workspace" in norm
+    ):
+        return True
+    return False
+
+
+def _resolve_valid_workspace_from_path(raw_path: str) -> Optional[str]:
+    """Extract a valid workspace directory name from a file or directory path."""
+    if not raw_path or not isinstance(raw_path, str):
+        return None
+    clean = raw_path.strip("\"'").replace("file://", "").strip()
+    if _is_internal_or_temp_path(clean):
+        return None
+    p = Path(clean)
+    # 1. Walk up looking for a .git repository root
+    curr = p if p.is_dir() else p.parent
+    while curr != curr.parent:
+        if _is_internal_or_temp_path(str(curr)):
+            return None
+        if (curr / ".git").exists() and is_valid_workspace_name(curr.name) and curr.name not in ("desk", "general", "tmp"):
+            return curr.name
+        curr = curr.parent
+    # 2. If p itself is a known project directory or direct child of ~/src or ~/src/<org>
+    home = Path.home()
+    src_dir = home / "src"
+    check_p = p if (not p.suffix and is_valid_workspace_name(p.name)) else p.parent
+    try:
+        if check_p.parent == home or check_p.parent == src_dir or check_p.parent.parent == src_dir:
+            if is_valid_workspace_name(check_p.name) and check_p.name not in ("desk", "general", "tmp"):
+                return check_p.name
+    except Exception:
+        pass
+    return None
 
 
 def extract_workspace_from_transcript(transcript_path: str) -> Optional[str]:
@@ -277,12 +409,13 @@ def extract_workspace_from_transcript(transcript_path: str) -> Optional[str]:
                         p_str = part.strip()
                         if p_str.startswith("- "):
                             ws_dir = p_str[2:].strip().replace("file://", "")
-                            wname = Path(ws_dir).name
-                            if is_valid_workspace_name(wname) and wname not in ("desk", "general", "tmp"):
-                                return wname
+                            if not _is_internal_or_temp_path(ws_dir):
+                                wname = Path(ws_dir).name
+                                if is_valid_workspace_name(wname) and wname not in ("desk", "general", "tmp"):
+                                    return wname
                 if "Command Working Directory:" in content:
                     cwd_line = content.split("Command Working Directory:")[1].split("\n")[0].strip().replace("file://", "")
-                    if cwd_line:
+                    if cwd_line and not _is_internal_or_temp_path(cwd_line):
                         wname = Path(cwd_line).name
                         if is_valid_workspace_name(wname) and wname not in ("desk", "general", "tmp"):
                             return wname
@@ -301,11 +434,9 @@ def extract_workspace_from_transcript(transcript_path: str) -> Optional[str]:
                 args = c.get("args", {})
                 cwd = args.get("Cwd") or args.get("cwd")
                 if cwd and isinstance(cwd, str):
-                    clean_cwd = cwd.strip("\"'").replace("file://", "")
-                    if clean_cwd and not clean_cwd.startswith("/tmp") and "agy_isolated" not in clean_cwd:
-                        cand = Path(clean_cwd).name
-                        if is_valid_workspace_name(cand) and cand not in ("desk", "general"):
-                            return cand
+                    ws_cand = _resolve_valid_workspace_from_path(cwd)
+                    if ws_cand:
+                        return ws_cand
                 tfile = (
                     args.get("Path")
                     or args.get("path")
@@ -314,16 +445,9 @@ def extract_workspace_from_transcript(transcript_path: str) -> Optional[str]:
                     or args.get("file_path")
                 )
                 if tfile and isinstance(tfile, str):
-                    clean_file = tfile.strip("\"'").replace("file://", "")
-                    if clean_file and not clean_file.startswith("/tmp") and "agy_isolated" not in clean_file:
-                        p = Path(clean_file).parent
-                        while p != p.parent:
-                            if (p / ".git").exists() and is_valid_workspace_name(p.name) and p.name not in ("desk", "general"):
-                                return p.name
-                            p = p.parent
-                        cand = Path(clean_file).parent.name
-                        if is_valid_workspace_name(cand) and cand not in ("desk", "general"):
-                            return cand
+                    ws_cand = _resolve_valid_workspace_from_path(tfile)
+                    if ws_cand:
+                        return ws_cand
     except Exception as e:
         logger.debug("Failed extracting workspace from transcript %s: %s", transcript_path, e)
     return None
@@ -335,7 +459,13 @@ def detect_workspace_from_content(text: Optional[str]) -> Optional[str]:
         return None
     lower = text.lower()
 
-    # 1. clj-einsum
+    # 1. bitecho
+    if any(k in lower for k in [
+        "bitecho", "light-node", "vopr", "nexus-ingress", "basalt", "tokenomics", "sociocratic"
+    ]):
+        return "bitecho"
+
+    # 2. clj-einsum
     if any(k in lower for k in [
         "clj-einsum", "einsum", "uop", "render.clj", "schedule.clj", "gemma4.sh",
         "phase 4a", "phase 4b", "phase 5a", "phase 5b", "phase 5c", "phase 5d", "phase 5e",
@@ -346,7 +476,7 @@ def detect_workspace_from_content(text: Optional[str]) -> Optional[str]:
     ]):
         return "clj-einsum"
 
-    # 2. gemma-4-developer-agent
+    # 3. gemma-4-developer-agent
     if any(k in lower for k in [
         "gemma-4-developer-agent", "gemma4", "kaggle", "gpu evaluation", "community intelligence",
         "ast_nav", "prepare_gpu_kernel", "val_subset", "locater", "patcher", "verifier",
@@ -355,25 +485,31 @@ def detect_workspace_from_content(text: Optional[str]) -> Optional[str]:
     ]):
         return "gemma-4-developer-agent"
 
-    # 3. gsuite-cli
+    # 4. bnb
+    if any(k in lower for k in [
+        "beansandbytes", "truebrodo", "physiozentrum", "baechli", "hermex"
+    ]):
+        return "bnb"
+
+    # 5. gsuite-cli
     if any(k in lower for k in [
         "gsuite-cli", "gsuite", "arayofsonny", "gmail", "google calendar", "google drive"
     ]):
         return "gsuite-cli"
 
-    # 4. mercury-cli
+    # 6. mercury-cli
     if any(k in lower for k in [
         "mercury-cli", "mercury", "checking ••", "savings ••"
     ]):
         return "mercury-cli"
 
-    # 5. jacquard
+    # 7. jacquard
     if any(k in lower for k in [
         "jacquard", "spy_theta", "spy_gex", "alpaca"
     ]):
         return "jacquard"
 
-    # 6. opt-chat
+    # 8. opt-chat
     if any(k in lower for k in [
         "opt-chat", "optchat", "engine.sock", "telemetry.db"
     ]):
@@ -458,21 +594,26 @@ class OptChatDaemon:
     def _resolve_workspace_name(self, payload: Dict[str, Any], tpath: Optional[str] = None) -> str:
         """Auto-detect real workspace name from caller CWD, payload, transcript, or fallbacks."""
         caller_cwd = payload.get("callerCwd")
+        hook_cwd = payload.get("cwd")
         ws_paths = payload.get("workspacePaths") or []
-        if caller_cwd:
-            p = Path(caller_cwd)
-            if p.name not in ("", "tmp", "config") and not str(p).endswith(".gemini/config") and "agy_isolated" not in str(p):
-                return p.name
-        if ws_paths and ws_paths[0]:
-            p = Path(ws_paths[0])
-            if p.name not in ("", "tmp", "config") and not str(p).endswith(".gemini/config") and "agy_isolated" not in str(p):
+        for raw_cand in ([caller_cwd, hook_cwd] + list(ws_paths)):
+            if not raw_cand or not isinstance(raw_cand, str):
+                continue
+            if _is_internal_or_temp_path(raw_cand):
+                continue
+            resolved_ws = _resolve_valid_workspace_from_path(raw_cand)
+            if resolved_ws:
+                return resolved_ws
+            p = Path(raw_cand.replace("file://", "").strip())
+            if is_valid_workspace_name(p.name) and p.name not in ("", "tmp", "config"):
                 return p.name
         if tpath:
             from_tpath = extract_workspace_from_transcript(tpath)
-            if from_tpath:
+            if from_tpath and is_valid_workspace_name(from_tpath):
                 return from_tpath
         ws_target = (str(self.workspace) if self.workspace else None) or os.getcwd()
-        return Path(ws_target).name if ws_target else "general"
+        target_name = Path(ws_target).name if ws_target else "general"
+        return target_name if is_valid_workspace_name(target_name) else "general"
 
     def _find_subagent_descriptor(self, conv_id: Optional[str], parent_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Look up Antigravity subagent metadata descriptor json file."""
@@ -562,13 +703,18 @@ class OptChatDaemon:
             if from_text and is_valid_workspace_name(from_text) and from_text not in ("desk", "general", "tmp"):
                 ws = from_text
 
-        # Tier 5: Payload callerCwd / workspacePaths (only if not desk / general / tmp)
+        # Tier 5: Payload callerCwd / cwd / workspacePaths (only if not desk / general / tmp)
         if not ws and payload:
             caller_cwd = payload.get("callerCwd")
+            hook_cwd = payload.get("cwd")
             ws_paths = payload.get("workspacePaths") or []
-            candidates = ([caller_cwd] if caller_cwd else []) + list(ws_paths)
+            candidates = [caller_cwd, hook_cwd] + list(ws_paths)
             for c in candidates:
-                if c and isinstance(c, str) and "agy_isolated" not in c and "/tmp" not in c:
+                if c and isinstance(c, str) and not _is_internal_or_temp_path(c):
+                    resolved_ws = _resolve_valid_workspace_from_path(c)
+                    if resolved_ws:
+                        ws = resolved_ws
+                        break
                     cand = Path(c.replace("file://", "").strip()).name
                     if is_valid_workspace_name(cand) and cand not in ("desk", "general", "tmp", "config"):
                         ws = cand
@@ -580,8 +726,8 @@ class OptChatDaemon:
         if role and role.lower() == "unknown":
             role = None
 
-        # Update cache if conv_id is present
-        if conv_id and conv_id != "unknown":
+        # Only update cache if conv_id is already a known subagent or has a parent/descriptor
+        if conv_id and conv_id != "unknown" and (conv_id in self._active_subagents or parent_id or desc_data):
             sub_entry = self._active_subagents.setdefault(conv_id, {})
             if ws and (not sub_entry.get("workspace") or sub_entry.get("workspace") in ("desk", "general")):
                 sub_entry["workspace"] = ws
@@ -1354,6 +1500,7 @@ class OptChatDaemon:
                         self._active_subagents[cid] = {
                             "role": role,
                             "typeName": tname,
+                            "model": sub.get("Model"),
                             "prompt": prompt,
                             "spawn_time": time.time(),
                             "workspace": sub_ws,
@@ -1381,8 +1528,9 @@ class OptChatDaemon:
                         )
                 return {"status": "ok"}
 
-            # 2. Subagent reporting back via send_message
-            if name == "send_message":
+            # 2. Subagent reporting back via send_message (only when called by a subagent, not parent)
+            is_subagent_caller = bool(parent_id or (conv_id in self._active_subagents) or self._is_subagent_conversation(conv_id, parent_id))
+            if name == "send_message" and is_subagent_caller:
                 sub_info = self._active_subagents.get(conv_id, {})
                 msg_content = args.get("Message", "")
                 sub_ws, sub_role = self._resolve_subagent_info(
@@ -1430,8 +1578,7 @@ class OptChatDaemon:
                 return {"status": "ok"}
 
             # 3. Intermediate tool execution inside a subagent
-            is_subagent_tool = bool(parent_id or (conv_id in self._active_subagents) or self._is_subagent_conversation(conv_id, parent_id))
-            if is_subagent_tool:
+            if is_subagent_caller:
                 sub_ws, sub_role = self._resolve_subagent_info(
                     conv_id=conv_id,
                     parent_id=parent_id,
@@ -1510,13 +1657,28 @@ class OptChatDaemon:
                 # Remove from active subagents now that everything is resolved
                 self._active_subagents.pop(conv_id, None)
 
-                sub_tokens = extract_cumulative_tokens_from_transcript(tpath) if tpath else {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
+                last_sub_step = self._logged_turn_steps.get(conv_id, -1)
+                sub_tokens = (
+                    extract_cumulative_tokens_from_transcript(tpath, min_step_index=last_sub_step)
+                    if tpath
+                    else {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "max_step_index": last_sub_step}
+                )
+                if sub_tokens.get("max_step_index", -1) > last_sub_step:
+                    self._logged_turn_steps[conv_id] = sub_tokens["max_step_index"]
+
                 sub_spawn_time = sub_info.get("spawn_time")
                 sub_dur_ms = int((time.time() - sub_spawn_time) * 1000) if sub_spawn_time else 0
-                sub_model = payload.get("model") or get_agy_default_model()
+                desc_data = self._find_subagent_descriptor(conv_id, parent_id)
+                sub_model = resolve_turn_model(
+                    payload=payload,
+                    sub_info=sub_info,
+                    role=sub_role,
+                    type_name=sub_info.get("typeName"),
+                    desc_data=desc_data,
+                )
                 sub_cost = estimate_cost_usd(sub_model, sub_tokens["input_tokens"], sub_tokens["output_tokens"], sub_tokens["cache_read_tokens"])
 
-                if getattr(self, "telemetry", None):
+                if getattr(self, "telemetry", None) and (sub_tokens["input_tokens"] > 0 or sub_tokens["output_tokens"] > 0 or last_sub_step < 0):
                     try:
                         self.telemetry.record_turn(
                             workspace=sub_ws or "desk",
@@ -1526,6 +1688,7 @@ class OptChatDaemon:
                             cache_read_tokens=sub_tokens["cache_read_tokens"],
                             duration_ms=sub_dur_ms,
                             conversation_id=conv_id,
+                            step_index=max(0, sub_tokens.get("max_step_index", 0)),
                             source="subagent",
                             role=sub_role,
                             provider="agy",
@@ -1589,10 +1752,10 @@ class OptChatDaemon:
                         tpath = str(cand)
 
             if tpath and os.path.isfile(tpath):
-                turn_info = extract_latest_turn_from_transcript(tpath)
+                last_logged = self._logged_turn_steps.get(conv_id, -1)
+                turn_info = extract_latest_turn_from_transcript(tpath, min_step_index=last_logged)
                 if turn_info:
                     step_idx = turn_info["step_index"]
-                    last_logged = self._logged_turn_steps.get(conv_id, -1)
                     if step_idx > last_logged:
                         clean_user = turn_info["user"].strip()
                         clean_reply = clean_message_text(turn_info["reply"]).strip()
@@ -1624,7 +1787,7 @@ class OptChatDaemon:
                             out_tok = turn_info.get("output_tokens", 0)
                             cache_tok = turn_info.get("cache_read_tokens", 0)
                             dur_ms = turn_info.get("duration_ms", 0)
-                            model_name = payload.get("model") or get_agy_default_model()
+                            model_name = resolve_turn_model(payload=payload, role=agent_name)
                             tokens_info = {
                                 "input": in_tok,
                                 "output": out_tok,

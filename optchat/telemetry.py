@@ -20,16 +20,27 @@ logger = logging.getLogger("optchat.telemetry")
 
 # Standard pricing estimates (USD per 1M tokens: input, output, cache_read)
 MODEL_PRICING: Dict[str, Tuple[float, float, float]] = {
-    # Gemini Flash tier
+    # Gemini 3.8 Flash tier
     "gemini-3.8-flash-low": (0.075, 0.30, 0.01875),
     "gemini-3.8-flash-medium": (0.075, 0.30, 0.01875),
     "gemini-3.8-flash-high": (0.075, 0.30, 0.01875),
     "gemini-1.5-flash": (0.075, 0.30, 0.01875),
-    # Gemini Argon / Pro tier
+    # Gemini 4 Hydrogen (Flash / Fast Coding tier)
+    "gemini-4-hydrogen-low": (0.15, 0.60, 0.0375),
+    "gemini-4-hydrogen-medium": (0.15, 0.60, 0.0375),
+    "gemini-4-hydrogen-high": (0.15, 0.60, 0.0375),
+    "gemini-4-hydrogen-xhigh": (0.15, 0.60, 0.0375),
+    # Gemini 4 Argon / Pro tier
     "gemini-4-argon-low": (1.25, 5.00, 0.3125),
     "gemini-4-argon-medium": (1.25, 5.00, 0.3125),
     "gemini-4-argon-high": (1.25, 5.00, 0.3125),
+    "gemini-pro-orchestrator-argon": (1.25, 5.00, 0.3125),
     "gemini-1.5-pro": (1.25, 5.00, 0.3125),
+    # Gemini 4 Carbon / Pro tier
+    "gemini-4-carbon-low": (1.25, 5.00, 0.3125),
+    "gemini-4-carbon-medium": (1.25, 5.00, 0.3125),
+    "gemini-4-carbon-high": (1.25, 5.00, 0.3125),
+    "gemini-pro-orchestrator": (1.25, 5.00, 0.3125),
     # Claude Sonnet tier
     "claude-sonnet-5-5-low": (3.00, 15.00, 0.30),
     "claude-sonnet-5-5-medium": (3.00, 15.00, 0.30),
@@ -45,18 +56,59 @@ MODEL_PRICING: Dict[str, Tuple[float, float, float]] = {
     "default": (0.10, 0.40, 0.025),
 }
 
+MODEL_ALIASES: Dict[str, str] = {
+    "orchestrator-carbon": "gemini-pro-orchestrator",
+    "orchestrator-argon": "gemini-pro-orchestrator-argon",
+    "claude-opus-5.5-low": "claude-opus-5-5-low",
+    "claude-opus-5.5-medium": "claude-opus-5-5-medium",
+    "claude-opus-5.5-high": "claude-opus-5-5-high",
+    "claude-sonnet-5.5-low": "claude-sonnet-5-5-low",
+    "claude-sonnet-5.5-medium": "claude-sonnet-5-5-medium",
+    "claude-sonnet-5.5-high": "claude-sonnet-5-5-high",
+}
+
+
+def normalize_model_name(model: Optional[str]) -> str:
+    """Normalize a display name or raw model string into a canonical model slug ID."""
+    if not model or not isinstance(model, str):
+        return "unknown"
+    raw = model.strip().lower()
+    if not raw:
+        return "unknown"
+    clean = re.sub(r"[^a-z0-9.]+", "-", raw).strip("-")
+    if clean in MODEL_ALIASES:
+        return MODEL_ALIASES[clean]
+    if clean in MODEL_PRICING and clean != "default":
+        return clean
+    # Normalize 5.5 -> 5-5 for claude models
+    clean_dash = clean.replace("5.5", "5-5")
+    if clean_dash in MODEL_PRICING:
+        return clean_dash
+    return clean or raw
+
 
 def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int, cache_read_tokens: int = 0) -> float:
     """Calculate estimated cost in USD based on model pricing table."""
-    norm_model = (model or "default").lower().strip()
-    clean_model = re.sub(r"[^a-z0-9.]+", "-", norm_model).strip("-")
-    pricing = MODEL_PRICING.get(norm_model) or MODEL_PRICING.get(clean_model)
+    norm_model = normalize_model_name(model)
+    pricing = MODEL_PRICING.get(norm_model)
     if not pricing:
-        # Match by prefix/substring if exact tier string not found
-        for k, v in MODEL_PRICING.items():
-            if k in norm_model or k in clean_model or norm_model.startswith(k) or clean_model.startswith(k):
-                pricing = v
-                break
+        if "opus" in norm_model:
+            pricing = MODEL_PRICING["claude-opus-5-5-high"]
+        elif "sonnet" in norm_model:
+            pricing = MODEL_PRICING["claude-sonnet-5-5-high"]
+        elif "carbon" in norm_model:
+            pricing = MODEL_PRICING["gemini-4-carbon-high"]
+        elif "hydrogen" in norm_model:
+            pricing = MODEL_PRICING["gemini-4-hydrogen-high"]
+        elif "argon" in norm_model:
+            pricing = MODEL_PRICING["gemini-4-argon-medium"]
+        elif "flash" in norm_model:
+            pricing = MODEL_PRICING["gemini-3.8-flash-medium"]
+        else:
+            for k, v in MODEL_PRICING.items():
+                if k != "default" and (k in norm_model or norm_model.startswith(k)):
+                    pricing = v
+                    break
     if not pricing:
         pricing = MODEL_PRICING["default"]
 
@@ -151,7 +203,7 @@ class TelemetryStore:
         total_tokens = input_tokens + output_tokens
         cost = estimate_cost_usd(model, input_tokens, output_tokens, cache_read_tokens)
         ws_clean = (workspace or "unknown").strip().lower()
-        model_clean = (model or "unknown").strip().lower()
+        model_clean = normalize_model_name(model)
 
         conn = self._get_connection()
         try:
@@ -214,7 +266,7 @@ class TelemetryStore:
                 params.append(workspace.lower().strip())
             if model and model.lower() != "all":
                 where_clauses.append("model = ?")
-                params.append(model.lower().strip())
+                params.append(normalize_model_name(model))
 
             where_str = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
@@ -245,7 +297,8 @@ class TelemetryStore:
 
             in_tok = row["total_input_tokens"]
             cache_tok = row["total_cache_read_tokens"]
-            cache_rate = (cache_tok / in_tok) if in_tok > 0 else 0.0
+            total_prompt_tok = in_tok + cache_tok
+            cache_rate = (cache_tok / total_prompt_tok) if total_prompt_tok > 0 else 0.0
 
             return {
                 "total_requests": row["total_requests"],
@@ -277,7 +330,7 @@ class TelemetryStore:
                 params.append(workspace.lower().strip())
             if model and model.lower() != "all":
                 where_clauses.append("model = ?")
-                params.append(model.lower().strip())
+                params.append(normalize_model_name(model))
 
             where_str = " WHERE " + " AND ".join(where_clauses)
 
@@ -412,7 +465,7 @@ class TelemetryStore:
                 params.append(workspace.lower().strip())
             if model and model.lower() != "all":
                 where_clauses.append("model = ?")
-                params.append(model.lower().strip())
+                params.append(normalize_model_name(model))
 
             where_str = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
             params.append(limit)

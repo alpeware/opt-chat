@@ -146,14 +146,24 @@ def matches_since_filter(msg_i: int, msg_date: str, since: Any) -> bool:
 
 
 def is_valid_workspace_name(name: Any) -> bool:
-    """Validate that a workspace label is a valid directory name, not a file or generic word."""
+    """Validate that a workspace label is a valid directory name, not a file, PID, hash, UUID, or generic word."""
     if not name or not isinstance(name, str):
         return False
     clean = name.strip()
     if not clean or len(clean) > 60:
         return False
+    # Never allow pure numbers (e.g. step indices or PIDs like 17720, 18117, 3481)
+    if clean.isdigit():
+        return False
+    # Never allow UUIDs (e.g. brain conversation directories like eff44797-50f6-440d-9c96-dc02302081f6)
+    lower = clean.lower()
+    if re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", lower):
+        return False
+    # Never allow long hex strings / git commit hashes (e.g. 1e4529875310311d1902094d25ad5ebb824665d1)
+    if re.match(r"^[0-9a-f]{16,64}$", lower):
+        return False
     # Never allow file extensions
-    if any(clean.lower().endswith(ext) for ext in (
+    if any(lower.endswith(ext) for ext in (
         ".md", ".clj", ".py", ".json", ".edn", ".txt", ".js", ".css", ".html",
         ".sh", ".yaml", ".yml", ".lock", ".toml", ".png", ".jpg", ".svg", ".log"
     )):
@@ -164,16 +174,18 @@ def is_valid_workspace_name(name: Any) -> bool:
     # Must only contain valid directory characters
     if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_\-\.]*$", clean):
         return False
-    # Filter out common markdown/code words, internal labels, or screaming-case placeholders
+    # Filter out common markdown/code words, internal labels, system subdirs, or screaming-case placeholders
     if clean.isupper():
         return False
     ignored = {
-        "subagent", "subagents", "agent", "note", "talk", "user", "work", "tool", "echo",
+        "subagent", "subagents", "agent", "agents", "note", "talk", "user", "work", "tool", "echo",
         "none", "all", "true", "false", "message", "dropdown", "walkthrough", "delta",
-        "premiums", "res", "dev", "task", "date", "archived", "session", "root", "unknown",
-        "null", "nil", "undefined"
+        "premiums", "res", "dev", "task", "tasks", "date", "archived", "session", "root", "unknown",
+        "null", "nil", "undefined", "logs", "log", "steps", "step", "chunks", "brain", "scratch",
+        "artifacts", "worktrees", "worktree", "skills", "hooks", "plugins", "cache", "config",
+        "tmp", "temp", "var", "proc", "etc", "usr", "home", "src", "system_generated"
     }
-    if clean.lower() in ignored:
+    if lower in ignored:
         return False
     return True
 

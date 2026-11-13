@@ -33,7 +33,7 @@ from optchat.providers import create_provider
 from optchat.providers.agy_provider import AgyProvider
 from optchat.providers.base import BaseLLMProvider
 from optchat.storage import Message, Storage, is_valid_workspace_name
-from optchat.telemetry import TelemetryStore, estimate_cost_usd
+from optchat.telemetry import TelemetryStore, estimate_cost_usd, normalize_model_name
 from optchat.tools import ToolRegistry
 from optchat.tree import node_coords
 from optchat.view import LiveView
@@ -42,6 +42,31 @@ from optchat.visualizer import export_html_to_file
 logger = logging.getLogger("optchat.web")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+DEFAULT_AGY_MODELS: List[Dict[str, str]] = [
+    {"id": "gemini-4-carbon-medium", "name": "Gemini 4 Carbon (Medium)", "provider": "google"},
+    {"id": "gemini-4-carbon-high", "name": "Gemini 4 Carbon (High)", "provider": "google"},
+    {"id": "gemini-4-carbon-low", "name": "Gemini 4 Carbon (Low)", "provider": "google"},
+    {"id": "gemini-4-argon-medium", "name": "Gemini 4 Argon (Medium)", "provider": "google"},
+    {"id": "gemini-4-argon-high", "name": "Gemini 4 Argon (High)", "provider": "google"},
+    {"id": "gemini-4-argon-low", "name": "Gemini 4 Argon (Low)", "provider": "google"},
+    {"id": "gemini-4-hydrogen-high", "name": "Gemini 4 Hydrogen (High)", "provider": "google"},
+    {"id": "gemini-4-hydrogen-xhigh", "name": "Gemini 4 Hydrogen (XHigh)", "provider": "google"},
+    {"id": "gemini-4-hydrogen-medium", "name": "Gemini 4 Hydrogen (Medium)", "provider": "google"},
+    {"id": "gemini-4-hydrogen-low", "name": "Gemini 4 Hydrogen (Low)", "provider": "google"},
+    {"id": "gemini-pro-orchestrator", "name": "Orchestrator (Carbon)", "provider": "google"},
+    {"id": "gemini-pro-orchestrator-argon", "name": "Orchestrator (Argon)", "provider": "google"},
+    {"id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)", "provider": "google"},
+    {"id": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)", "provider": "google"},
+    {"id": "gemini-3.8-flash-low", "name": "Gemini 3.8 Flash (Low)", "provider": "google"},
+    {"id": "claude-opus-5-5-high", "name": "Claude Opus 5.5 (High)", "provider": "anthropic"},
+    {"id": "claude-opus-5-5-medium", "name": "Claude Opus 5.5 (Medium)", "provider": "anthropic"},
+    {"id": "claude-opus-5-5-low", "name": "Claude Opus 5.5 (Low)", "provider": "anthropic"},
+    {"id": "claude-sonnet-5-5-high", "name": "Claude Sonnet 5.5 (High)", "provider": "anthropic"},
+    {"id": "claude-sonnet-5-5-medium", "name": "Claude Sonnet 5.5 (Medium)", "provider": "anthropic"},
+    {"id": "claude-sonnet-5-5-low", "name": "Claude Sonnet 5.5 (Low)", "provider": "anthropic"},
+    {"id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)", "provider": "openai"},
+]
 
 
 class OptChatWebServer:
@@ -96,6 +121,8 @@ class OptChatWebServer:
 
         self._active_stream_queues: Set[asyncio.Queue[Dict[str, Any]]] = set()
         self._daemon_event_task: Optional[asyncio.Task] = None
+        self._cached_models: Optional[List[Dict[str, str]]] = None
+        self._cached_models_ts: float = 0.0
 
     async def init_engine(self) -> None:
         client = EngineClient(socket_path=self.chat_dir / "engine.sock")
@@ -573,25 +600,56 @@ class OptChatWebServer:
             "model": self.model,
         })
 
+    async def _get_available_models(self) -> List[Dict[str, str]]:
+        now = time.time()
+        if self._cached_models is not None and (now - self._cached_models_ts) < 300.0:
+            return self._cached_models
+
+        if self.provider_name == "agy" and self.agy_path and os.path.exists(self.agy_path):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    self.agy_path,
+                    "models",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+                if proc.returncode == 0 and stdout:
+                    parsed: List[Dict[str, str]] = []
+                    seen_ids: Set[str] = set()
+                    for line in stdout.decode("utf-8", errors="replace").splitlines():
+                        line = line.strip()
+                        if not line or line.startswith("---") or line.lower().startswith("available") or line.lower().startswith("id "):
+                            continue
+                        parts = re.split(r"\s{2,}", line, maxsplit=1)
+                        if len(parts) == 2:
+                            m_id, m_name = parts[0].strip(), parts[1].strip()
+                            if m_id and m_name and " " not in m_id and m_id not in seen_ids:
+                                lower_id = m_id.lower()
+                                if "claude" in lower_id:
+                                    prov = "anthropic"
+                                elif "gpt" in lower_id:
+                                    prov = "openai"
+                                else:
+                                    prov = "google"
+                                parsed.append({"id": m_id, "name": m_name, "provider": prov})
+                                seen_ids.add(m_id)
+                    if parsed:
+                        self._cached_models = parsed
+                        self._cached_models_ts = now
+                        return parsed
+            except Exception as e:
+                logger.debug("Failed to query agy models dynamically: %s", e)
+
+        self._cached_models = list(DEFAULT_AGY_MODELS)
+        self._cached_models_ts = now
+        return self._cached_models
+
     async def handle_api_models(self, request: web.Request) -> web.Response:
-        models = [
-            {"id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)", "provider": "google"},
-            {"id": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)", "provider": "google"},
-            {"id": "gemini-3.8-flash-low", "name": "Gemini 3.8 Flash (Low)", "provider": "google"},
-            {"id": "gemini-4-argon-high", "name": "Gemini 4 Argon (High)", "provider": "google"},
-            {"id": "gemini-4-argon-medium", "name": "Gemini 4 Argon (Medium)", "provider": "google"},
-            {"id": "gemini-4-argon-low", "name": "Gemini 4 Argon (Low)", "provider": "google"},
-            {"id": "claude-sonnet-5-5-high", "name": "Claude Sonnet 5.5 (High)", "provider": "anthropic"},
-            {"id": "claude-sonnet-5-5-medium", "name": "Claude Sonnet 5.5 (Medium)", "provider": "anthropic"},
-            {"id": "claude-sonnet-5-5-low", "name": "Claude Sonnet 5.5 (Low)", "provider": "anthropic"},
-            {"id": "claude-opus-5-5-high", "name": "Claude Opus 5.5 (High)", "provider": "anthropic"},
-            {"id": "claude-opus-5-5-medium", "name": "Claude Opus 5.5 (Medium)", "provider": "anthropic"},
-            {"id": "claude-opus-5-5-low", "name": "Claude Opus 5.5 (Low)", "provider": "anthropic"},
-            {"id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)", "provider": "openai"},
-        ]
+        models = await self._get_available_models()
         return web.json_response({
             "models": models,
-            "current_model": self.model or "gemini-3.8-flash-high",
+            "current_model": normalize_model_name(self.model) if self.model else "gemini-3.8-flash-high",
         })
 
     async def handle_api_state(self, request: web.Request) -> web.Response:

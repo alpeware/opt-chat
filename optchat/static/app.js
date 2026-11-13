@@ -148,6 +148,19 @@ function isMatchingMessageText(a, b) {
   return false;
 }
 
+function matchesWorkspaceFilter(ws) {
+  if (!selectedWorkspace || selectedWorkspace === 'all') return true;
+  return Boolean(ws && ws.toLowerCase() === selectedWorkspace.toLowerCase());
+}
+
+function matchesCategoryFilter(kind) {
+  if (!selectedCategory || selectedCategory === 'all') return true;
+  if (selectedCategory === 'main') return (kind === 'user' || kind === 'talk');
+  if (selectedCategory === 'subagent') return (kind === 'work');
+  if (selectedCategory === 'note') return (kind === 'note');
+  return true;
+}
+
 function findInFlightRequest(event) {
   const reqId = (event.extra && event.extra.req_id) || event.req_id;
   if (reqId && inFlightRequests.has(reqId)) {
@@ -156,10 +169,11 @@ function findInFlightRequest(event) {
   const ws = (event.extra && event.extra.workspace) || event.workspace;
   if (ws) {
     for (const req of inFlightRequests.values()) {
-      if (req.workspace.toLowerCase() === ws.toLowerCase()) {
+      if (req.workspace && req.workspace.toLowerCase() === ws.toLowerCase()) {
         return req;
       }
     }
+    return null;
   }
   if (inFlightRequests.size === 1) {
     return inFlightRequests.values().next().value;
@@ -168,6 +182,9 @@ function findInFlightRequest(event) {
 }
 
 function handleStreamEvent(event) {
+  const evtWs = (event.extra && event.extra.workspace) || event.workspace;
+  const wsMatch = matchesWorkspaceFilter(evtWs);
+
   if (event.type === 'token' || event.type === 'text') {
     const req = findInFlightRequest(event);
     if (req) {
@@ -180,8 +197,9 @@ function handleStreamEvent(event) {
       }
       return;
     }
+    if (!wsMatch || !matchesCategoryFilter('talk')) return;
     if (!currentAssistantBubble) {
-      currentAssistantBubble = pendingAssistantBubbles.shift() || appendMessage('talk', '', new Date().toISOString(), true);
+      currentAssistantBubble = pendingAssistantBubbles.shift() || appendMessage('talk', '', new Date().toISOString(), true, null, evtWs);
       currentStreamedText = '';
     }
     currentStreamedText += event.content;
@@ -209,6 +227,10 @@ function handleStreamEvent(event) {
       fetchState();
       return;
     }
+    if (!wsMatch || !matchesCategoryFilter('talk')) {
+      fetchState();
+      return;
+    }
     // Check if an existing row in chat-stream already matches this text
     const stream = document.getElementById('chat-stream');
     if (stream) {
@@ -227,7 +249,7 @@ function handleStreamEvent(event) {
       }
     }
     if (!currentAssistantBubble) {
-      currentAssistantBubble = pendingAssistantBubbles.shift() || appendMessage('talk', '', new Date().toISOString(), false);
+      currentAssistantBubble = pendingAssistantBubbles.shift() || appendMessage('talk', '', new Date().toISOString(), false, null, evtWs);
     }
     currentStreamedText = event.content;
     currentAssistantBubble.innerHTML = renderBubbleContent('talk', currentStreamedText);
@@ -262,11 +284,13 @@ function handleStreamEvent(event) {
       }
       return;
     }
+    if (!wsMatch) return;
     const target = currentAssistantBubble || (pendingAssistantBubbles.length > 0 ? pendingAssistantBubbles[0] : null);
     if (target && !currentStreamedText) {
       target.innerHTML = `<span style="color: var(--text-dim); font-style: italic;">⏳ ${escapeHtml(event.content)}</span>`;
     }
   } else if (event.type === 'tool_call' || event.type === 'log_tool') {
+    if (!wsMatch) return;
     const toolEl = document.createElement('details');
     toolEl.className = 'tool-box';
     toolEl.innerHTML = `<summary>⚡ Tool: ${escapeHtml(event.content)}</summary><pre>${escapeHtml(event.content)}</pre>`;
@@ -274,6 +298,7 @@ function handleStreamEvent(event) {
     document.getElementById('chat-stream').insertBefore(toolEl, target);
     scrollToBottom();
   } else if (event.type === 'log_echo') {
+    if (!wsMatch) return;
     const echoEl = document.createElement('details');
     echoEl.className = 'tool-box';
     echoEl.innerHTML = `<summary>📄 Tool Result</summary><pre>${escapeHtml(event.content)}</pre>`;
@@ -281,6 +306,7 @@ function handleStreamEvent(event) {
     document.getElementById('chat-stream').insertBefore(echoEl, target);
     scrollToBottom();
   } else if (event.type === 'subagent_spawn') {
+    if (!wsMatch || !matchesCategoryFilter('work')) return;
     const role = (event.extra && event.extra.role) || 'Subagent';
     const typeName = (event.extra && event.extra.typeName) || 'subagent';
     const prompt = (event.extra && event.extra.prompt) || event.content;
@@ -298,6 +324,7 @@ function handleStreamEvent(event) {
     document.getElementById('chat-stream').insertBefore(card, target);
     scrollToBottom();
   } else if (event.type === 'subagent_tool') {
+    if (!wsMatch || !matchesCategoryFilter('work')) return;
     const toolName = (event.extra && event.extra.tool) || 'tool';
     const toolArgs = (event.extra && event.extra.args) || {};
     const toolEl = document.createElement('details');
@@ -310,7 +337,7 @@ function handleStreamEvent(event) {
     scrollToBottom();
   } else if (event.type === 'subagent_complete') {
     const tokens = event.extra ? event.extra.tokens : null;
-    if (tokens) {
+    if (tokens && wsMatch && matchesCategoryFilter('work')) {
       const workRows = document.querySelectorAll('#chat-stream .message-row.work');
       if (workRows.length > 0) {
         const lastWork = workRows[workRows.length - 1];
@@ -319,15 +346,44 @@ function handleStreamEvent(event) {
         }
       }
     }
-    scrollToBottom();
+    if (wsMatch && matchesCategoryFilter('work')) {
+      scrollToBottom();
+    }
     fetchTelemetrySummary();
   } else if (event.type === 'subagent_report') {
+    if (!wsMatch || !matchesCategoryFilter('work')) {
+      fetchState();
+      fetchTelemetrySummary();
+      return;
+    }
     const repText = (event.extra && event.extra.report) || event.content;
     const role = (event.extra && event.extra.role) || 'Subagent';
-    const b = appendMessage('work', `### 📋 Subagent Report: ${role}\n\n${repText}`, new Date().toISOString(), false);
-    if (b && event.extra && event.extra.tokens) {
-      const r = b.closest('.message-row');
-      if (r) attachTokenBadgeToRow(r, event.extra.tokens);
+    const fullText = `### 📋 Subagent Report: ${role}\n\n${repText}`;
+    const stream = document.getElementById('chat-stream');
+    let matchedWorkRow = null;
+    if (stream) {
+      const workRows = stream.querySelectorAll('.message-row.work');
+      for (let idx = workRows.length - 1; idx >= Math.max(0, workRows.length - 8); idx--) {
+        const r = workRows[idx];
+        const rText = r.getAttribute('data-raw-text');
+        if (isMatchingMessageText(rText, fullText) || isMatchingMessageText(rText, repText)) {
+          matchedWorkRow = r;
+          break;
+        }
+      }
+    }
+    if (matchedWorkRow) {
+      if (event.extra && event.extra.tokens) attachTokenBadgeToRow(matchedWorkRow, event.extra.tokens);
+      enrichMessageRow(matchedWorkRow, 'work', evtWs, null, new Date().toISOString());
+    } else {
+      const b = appendMessage('work', fullText, new Date().toISOString(), false, null, evtWs);
+      if (b) {
+        const r = b.closest('.message-row');
+        if (r) {
+          r.setAttribute('data-raw-text', fullText.trim());
+          if (event.extra && event.extra.tokens) attachTokenBadgeToRow(r, event.extra.tokens);
+        }
+      }
     }
     scrollToBottom();
     fetchState();
@@ -341,6 +397,7 @@ function handleStreamEvent(event) {
       inFlightRequests.delete(req.reqId);
       return;
     }
+    if (!wsMatch) return;
     if (currentAssistantBubble) {
       currentAssistantBubble.innerHTML = `<span style="color: #ef4444;">Error: ${escapeHtml(event.content)}</span>`;
       currentAssistantBubble = null;
@@ -352,15 +409,15 @@ function handleStreamEvent(event) {
     const kind = (event.extra && event.extra.kind) || 'talk';
     const text = (event.content || '').trim();
     const date = (event.extra && event.extra.date) || new Date().toISOString();
-    const ws = (event.extra && event.extra.workspace);
+    const ws = (event.extra && event.extra.workspace) || event.workspace;
     const dev = (event.extra && event.extra.device);
     const msgId = (event.extra && event.extra.i);
-    const wsMatch = (!selectedWorkspace || selectedWorkspace === 'all' || (ws && ws.toLowerCase() === selectedWorkspace.toLowerCase()));
-    let catMatch = true;
-    if (selectedCategory && selectedCategory !== 'all') {
-      if (selectedCategory === 'main') catMatch = (kind === 'user' || kind === 'talk');
-      else if (selectedCategory === 'subagent') catMatch = (kind === 'work');
-      else if (selectedCategory === 'note') catMatch = (kind === 'note');
+    const msgWsMatch = matchesWorkspaceFilter(ws);
+    const catMatch = matchesCategoryFilter(kind);
+
+    if (!msgWsMatch || !catMatch) {
+      fetchState();
+      return;
     }
 
     // Deduplication check: reconcile against existing optimistic or streamed bubbles
@@ -420,18 +477,16 @@ function handleStreamEvent(event) {
       return;
     }
 
-    if (wsMatch && catMatch) {
-      const newBubble = appendMessage(kind, text, date, false, null, ws, dev);
-      if (newBubble) {
-        const r = newBubble.closest('.message-row');
-        if (r) {
-          r.setAttribute('data-raw-text', text);
-          if (msgId !== undefined && msgId !== null) r.setAttribute('data-msg-id', String(msgId));
-          if (event.extra && event.extra.tokens) attachTokenBadgeToRow(r, event.extra.tokens);
-        }
+    const newBubble = appendMessage(kind, text, date, false, null, ws, dev);
+    if (newBubble) {
+      const r = newBubble.closest('.message-row');
+      if (r) {
+        r.setAttribute('data-raw-text', text);
+        if (msgId !== undefined && msgId !== null) r.setAttribute('data-msg-id', String(msgId));
+        if (event.extra && event.extra.tokens) attachTokenBadgeToRow(r, event.extra.tokens);
       }
-      scrollToBottom();
     }
+    scrollToBottom();
     fetchState();
   } else if (event.type === 'turn_complete') {
     const tokens = event.extra ? event.extra.tokens : null;
@@ -446,6 +501,11 @@ function handleStreamEvent(event) {
         }
       }
       inFlightRequests.delete(req.reqId);
+      fetchState();
+      fetchTelemetrySummary();
+      return;
+    }
+    if (!wsMatch) {
       fetchState();
       fetchTelemetrySummary();
       return;

@@ -180,3 +180,62 @@ def test_compactor_and_subagent_telemetry(tmp_path: Path):
     assert len(recent) == 2
     assert recent[0]["source"] == "subagent"
     assert recent[1]["source"] == "compactor"
+
+
+def test_cache_hit_rate_bounded_and_model_normalization(tmp_path: Path):
+    from optchat.telemetry import normalize_model_name
+    from optchat.daemon import resolve_turn_model, extract_cumulative_tokens_from_transcript
+    import json
+
+    store = TelemetryStore(chat_dir=tmp_path)
+    # In Antigravity transcripts, input_tokens is uncached input and cache_read_tokens is cached input.
+    # When cache_read_tokens (80,000) > input_tokens (20,000), cache_hit_rate should be 80,000 / 100,000 = 0.8 (80%), never > 1.0.
+    store.record_turn(
+        workspace="bitecho",
+        model="Gemini 4 Hydrogen (High)",
+        input_tokens=20_000,
+        output_tokens=1_000,
+        cache_read_tokens=80_000,
+    )
+    summary = store.get_summary()
+    assert summary["cache_hit_rate"] == 0.8
+    assert summary["cache_hit_rate"] <= 1.0
+
+    # Verify model normalization maps display names and aliases to canonical IDs
+    assert normalize_model_name("Gemini 4 Argon (Medium)") == "gemini-4-argon-medium"
+    assert normalize_model_name("Gemini 4 Hydrogen (High)") == "gemini-4-hydrogen-high"
+    assert normalize_model_name("Gemini 4 Carbon (High)") == "gemini-4-carbon-high"
+    assert normalize_model_name("Claude Opus 5.5 (High)") == "claude-opus-5-5-high"
+
+    by_model = store.get_model_breakdown()
+    assert len(by_model) == 1
+    assert by_model[0]["model"] == "gemini-4-hydrogen-high"
+
+    # Verify resolve_turn_model reads HookArgsCommon's modelName and subagent descriptors
+    assert resolve_turn_model({"modelName": "Claude Opus 5.5 (High)"}) == "claude-opus-5-5-high"
+    assert resolve_turn_model({"modelName": "Gemini 4 Argon (Medium)"}, sub_info={"role": "Opus Architect", "typeName": "opus-architect"}) == "claude-opus-5-5-high"
+    assert resolve_turn_model({"modelName": "Gemini 4 Argon (Medium)"}, sub_info={"role": "Carbon Reviewer", "typeName": "carbon-reviewer"}) == "gemini-4-carbon-high"
+    assert resolve_turn_model({"modelName": "Gemini 4 Argon (Medium)"}, sub_info={"role": "Explorer", "model": "flash"}) == "gemini-4-hydrogen-high"
+
+    # Verify extract_cumulative_tokens_from_transcript respects min_step_index
+    tpath = tmp_path / "sub_transcript.jsonl"
+    tpath.write_text(
+        "\n".join([
+            json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 50}),
+            json.dumps({"step_index": 3, "type": "PLANNER_RESPONSE", "input_tokens": 250, "output_tokens": 25, "cache_read_tokens": 125}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    tok_all = extract_cumulative_tokens_from_transcript(str(tpath), min_step_index=-1)
+    assert tok_all["input_tokens"] == 350
+    assert tok_all["max_step_index"] == 3
+
+    tok_delta = extract_cumulative_tokens_from_transcript(str(tpath), min_step_index=1)
+    assert tok_delta["input_tokens"] == 250
+    assert tok_delta["output_tokens"] == 25
+    assert tok_delta["cache_read_tokens"] == 125
+    assert tok_delta["max_step_index"] == 3
+    tok_empty = extract_cumulative_tokens_from_transcript(str(tpath), min_step_index=3)
+    assert tok_empty["input_tokens"] == 0
+    assert tok_empty["output_tokens"] == 0
+

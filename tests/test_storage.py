@@ -156,3 +156,16 @@ def test_is_valid_workspace_name():
     assert is_valid_workspace_name("null") is False
     assert is_valid_workspace_name("") is False
     assert is_valid_workspace_name(None) is False
+
+    # Polluted subagent step IDs, UUIDs, hex hashes, and internal directories
+    assert is_valid_workspace_name("17720") is False
+    assert is_valid_workspace_name("18117") is False
+    assert is_valid_workspace_name("3481") is False
+    assert is_valid_workspace_name("1e4529875310311d1902094d25ad5ebb824665d1") is False
+    assert is_valid_workspace_name("a922cf45-69a3-4674-89fb-54a59e253682") is False
+    assert is_valid_workspace_name("eff44797-50f6-440d-9c96-dc02302081f6") is False
+    assert is_valid_workspace_name("logs") is False
+    assert is_valid_workspace_name("tasks") is False
+    assert is_valid_workspace_name("steps") is False
+    assert is_valid_workspace_name("brain") is False
+
